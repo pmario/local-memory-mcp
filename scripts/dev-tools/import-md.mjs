@@ -66,6 +66,9 @@ Options:
   --envelope-only <file>  write the envelope and stop (no server, no import)
                         Envelope output assigns missing ids (write-back), so
                         the envelope is stable across runs.
+  --from-envelope <file>  import from an existing JSON envelope instead of
+                        a markdown tree. Cannot be combined with a tree
+                        argument or the envelope output flags.
   --server <path>       server entrypoint (default: dist/server.js in this
                         repository; run "npm run build" first)
   --verify              compare the tree field-by-field against the target
@@ -106,8 +109,9 @@ const flagValue = (name) => {
 	const i = argv.indexOf(name);
 	return i !== -1 ? argv[i + 1] : undefined;
 };
-const valueFlags = ['--db', '--envelope', '--envelope-only', '--server'];
+const valueFlags = ['--db', '--envelope', '--envelope-only', '--server', '--from-envelope'];
 const positional = argv.filter((a, i) => !a.startsWith('-') && !valueFlags.includes(argv[i - 1]));
+const fromEnvelope = flagValue('--from-envelope');
 const mdDir = positional[0] ?? join(downloadsDir(), 'local-memory-export');
 const targetDb = flagValue('--db') ?? process.env.MEMORY_DB_PATH ?? join(defaultDataDir(), 'memory.sqlite');
 
@@ -130,7 +134,20 @@ const envelopeOut = flagValue('--envelope') ?? flagValue('--envelope-only');
 const envelopeOnly = argv.includes('--envelope-only');
 const serverPath = flagValue('--server') ?? fileURLToPath(new URL('../../dist/server.js', import.meta.url));
 
-if (!mdDir || !existsSync(mdDir)) {
+if (fromEnvelope) {
+	if (positional[0]) {
+		console.error('Pass either a markdown tree or --from-envelope, not both.');
+		process.exit(2);
+	}
+	if (envelopeOut) {
+		console.error('--envelope/--envelope-only with --from-envelope would only copy the input file.');
+		process.exit(2);
+	}
+	if (!existsSync(fromEnvelope)) {
+		console.error(`No envelope at ${fromEnvelope}.`);
+		process.exit(2);
+	}
+} else if (!mdDir || !existsSync(mdDir)) {
 	console.error(`No markdown tree at "${mdDir ?? ''}". See --help.`);
 	process.exit(2);
 }
@@ -160,6 +177,7 @@ function parseFile(path) {
 }
 
 const listMd = (sub) => {
+	if (fromEnvelope) return [];
 	const dir = join(mdDir, sub);
 	if (!existsSync(dir)) return [];
 	return readdirSync(dir).filter((f) => f.endsWith('.md')).map((f) => join(dir, f));
@@ -322,7 +340,7 @@ if (existsSync(join(mdDir, 'relations.md'))) {
 const profile = {};
 let goal = null;
 let treeSchemaVersion = null;
-if (existsSync(join(mdDir, 'meta.md'))) {
+if (!fromEnvelope && existsSync(join(mdDir, 'meta.md'))) {
 	const { fields: f } = parseFile(join(mdDir, 'meta.md'));
 	for (const [k, v] of Object.entries(f)) {
 		if (k.startsWith('profile_')) profile[k.replace(/^profile_/, '')] = v;
@@ -335,7 +353,7 @@ if (treeSchemaVersion !== null && treeSchemaVersion !== EXPECTED_SCHEMA_VERSION)
 	process.exit(2);
 }
 
-const envelope = {
+let envelope = {
 	format: 'studiomeyer-memory-export',
 	version: 1,
 	exportedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
@@ -351,7 +369,30 @@ const envelope = {
 	relations,
 	sessions,
 };
-console.log(`Read ${mdDir}: ${learnings.length} learnings, ${decisions.length} decisions, ${sessions.length} sessions, ${entities.length} entities, ${observations.length} observations, ${relations.length} relations`);
+if (fromEnvelope) {
+	// Replace the (empty) tree-derived envelope with the given file, after
+	// the same vintage checks the tree's meta.md gets.
+	envelope = JSON.parse(readFileSync(fromEnvelope, 'utf8'));
+	if (envelope.format !== 'studiomeyer-memory-export') {
+		console.error(`Unrecognised envelope format "${envelope.format}". Expected studiomeyer-memory-export.`);
+		process.exit(2);
+	}
+	if (envelope.version !== 1) {
+		console.error(`Envelope version ${envelope.version}; this script was written for 1.`);
+		process.exit(2);
+	}
+	const sv = envelope.schemaVersion == null ? 'unknown' : String(envelope.schemaVersion);
+	if (sv !== 'unknown' && sv !== EXPECTED_SCHEMA_VERSION) {
+		console.error(`Refusing: the envelope records schema_version ${sv}, this script was written for ${EXPECTED_SCHEMA_VERSION}.`);
+		process.exit(2);
+	}
+	for (const kind of ['learnings', 'decisions', 'entities', 'observations', 'relations', 'sessions']) {
+		envelope[kind] = envelope[kind] ?? [];
+	}
+	console.log(`Read ${fromEnvelope}: ${envelope.learnings.length} learnings, ${envelope.decisions.length} decisions, ${envelope.sessions.length} sessions, ${envelope.entities.length} entities, ${envelope.observations.length} observations, ${envelope.relations.length} relations`);
+} else {
+	console.log(`Read ${mdDir}: ${learnings.length} learnings, ${decisions.length} decisions, ${sessions.length} sessions, ${entities.length} entities, ${observations.length} observations, ${relations.length} relations`);
+}
 
 if (envelopeOut) {
 	writeFileSync(envelopeOut, JSON.stringify(envelope, null, '\t') + '\n', 'utf8');
@@ -372,7 +413,7 @@ function runVerify() {
 		}
 	};
 	const dbLearnings = new Map(vdb.prepare('SELECT * FROM learnings').all().map((r) => [r.id, r]));
-	for (const l of learnings) {
+	for (const l of envelope.learnings) {
 		const r = dbLearnings.get(l.id);
 		if (!r) { mismatches++; console.log(`MISSING in DB: learning ${l.id}`); continue; }
 		compare('learning', l.id, 'date', l.date, r.date);
@@ -392,9 +433,9 @@ function runVerify() {
 		compare('learning', l.id, 'lifecycleState', l.lifecycleState, r.lifecycle_state);
 		compare('learning', l.id, 'memoryType', l.memoryType, r.memory_type);
 	}
-	if (learnings.length !== dbLearnings.size) { mismatches++; console.log(`COUNT: md has ${learnings.length} learnings, DB has ${dbLearnings.size}`); }
+	if (envelope.learnings.length !== dbLearnings.size) { mismatches++; console.log(`COUNT: md has ${envelope.learnings.length} learnings, DB has ${dbLearnings.size}`); }
 	const dbDecisions = new Map(vdb.prepare('SELECT * FROM decisions').all().map((r) => [r.id, r]));
-	for (const d of decisions) {
+	for (const d of envelope.decisions) {
 		const r = dbDecisions.get(d.id);
 		if (!r) { mismatches++; console.log(`MISSING in DB: decision ${d.id}`); continue; }
 		compare('decision', d.id, 'title', d.title, r.title);
@@ -405,7 +446,7 @@ function runVerify() {
 		compare('decision', d.id, 'tags', d.tags, JSON.parse(r.tags_json));
 	}
 	const dbSessions = new Map(vdb.prepare('SELECT * FROM sessions').all().map((r) => [r.id, r]));
-	for (const s of sessions) {
+	for (const s of envelope.sessions) {
 		const r = dbSessions.get(s.id);
 		if (!r) { mismatches++; console.log(`MISSING in DB: session ${s.id}`); continue; }
 		compare('session', s.id, 'summary', s.summary, r.summary);
@@ -413,7 +454,7 @@ function runVerify() {
 		compare('session', s.id, 'project', s.project, r.project);
 	}
 	const dbEntities = new Map(vdb.prepare('SELECT * FROM entities').all().map((r) => [r.id, r]));
-	for (const e of entities) {
+	for (const e of envelope.entities) {
 		const r = dbEntities.get(e.id);
 		if (!r) { mismatches++; console.log(`MISSING in DB: entity ${e.id}`); continue; }
 		compare('entity', e.id, 'name', e.name, r.name);
@@ -424,7 +465,7 @@ function runVerify() {
 		compare('entity', e.id, 'confidence', e.confidence, r.confidence);
 	}
 	const dbObs = new Map(vdb.prepare('SELECT * FROM entity_observations').all().map((r) => [r.id, r]));
-	for (const o of observations) {
+	for (const o of envelope.observations) {
 		const r = dbObs.get(o.id);
 		if (!r) { mismatches++; console.log(`MISSING in DB: observation ${o.id}`); continue; }
 		compare('observation', o.id, 'entityId', o.entityId, r.entity_id);
@@ -437,7 +478,7 @@ function runVerify() {
 		compare('observation', o.id, 'createdAt', o.createdAt, r.created_at);
 	}
 	const dbRels = new Map(vdb.prepare('SELECT * FROM entity_relations').all().map((r) => [r.id, r]));
-	for (const rel of relations) {
+	for (const rel of envelope.relations) {
 		const r = dbRels.get(rel.id);
 		if (!r) { mismatches++; console.log(`MISSING in DB: relation ${rel.id}`); continue; }
 		compare('relation', rel.id, 'fromEntityId', rel.fromEntityId, r.from_entity_id);
@@ -468,24 +509,28 @@ if (!apply) {
 		}
 		pdb.close();
 	}
-	console.log(`DRY-RUN against ${targetDb} (${exists ? 'existing store' : 'would be created fresh'}):`);
+	console.log(`DRY-RUN against ${targetDb}`);
 	if (exists) {
 		const v = schemaVersionOf(targetDb);
 		if (v !== EXPECTED_SCHEMA_VERSION) {
 			console.log(`  SCHEMA MISMATCH: target schema_version is ${v}, this script was written for ${EXPECTED_SCHEMA_VERSION}; a real run would refuse.`);
 		}
 	}
+	console.log('');
+	console.log(exists ? 'Existing store:' : 'New store (will be created):');
 	for (const key of Object.keys(TABLE_OF)) {
 		const items = envelope[key];
 		const dupes = items.filter((i) => existingIds[key].has(i.id)).length;
 		console.log(`  ${key}: ${items.length - dupes} would be added, ${dupes} already present (skipped)`);
 	}
+	console.log('');
 	if (exists && !merge) console.log('  NOTE: importing into this existing store requires --apply --merge.');
 	else if (merge) console.log('  NOTE: --merge alone is still a dry run; pass --apply --merge to import.');
 	else console.log('  Pass --apply to perform the import.');
 	if (!existsSync(serverPath)) {
 		console.log(`  NOTE: no server at ${serverPath}; --apply would refuse. Run "npm run build" or pass --server <path>.`);
 	}
+	console.log('');
 	console.log('Nothing was written.');
 	process.exit(process.exitCode ?? 0);
 }

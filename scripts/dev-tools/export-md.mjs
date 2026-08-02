@@ -126,15 +126,20 @@ const targetState = !existsSync(outDir) ? 'missing' : readdirSync(outDir).length
 if (!doExport) {
 	const count = (table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
 	console.log(`DRY-RUN: would export ${dbPath}`);
-	console.log(`  -> ${outDir} (${targetState === 'missing' ? 'will be created' : targetState === 'empty' ? 'empty, ok' : 'NOT EMPTY: a real run would refuse'})`);
-	console.log(`  learnings: ${count('learnings')} (${db.prepare('SELECT COUNT(*) AS n FROM learnings WHERE archived = 1').get().n} archived)`);
-	console.log(`  decisions: ${count('decisions')}`);
-	console.log(`  entities: ${count('entities')} (${count('entity_observations')} observations, ${count('entity_relations')} relations)`);
-	console.log(`  sessions: ${count('sessions')}`);
 	if (schemaDrift.length) {
 		console.log(`  SCHEMA DRIFT: a real run would refuse.\n    ${schemaDrift.join('\n    ')}`);
 	}
-	console.log('Nothing was written. Pass -e or --export to write.');
+	console.log('');
+	console.log('Store content:');
+	console.log(`  learnings: ${count('learnings')} (${db.prepare('SELECT COUNT(*) AS n FROM learnings WHERE archived = 1').get().n} archived)`);
+	console.log(`  decisions: ${count('decisions')}`);
+	console.log(`  sessions: ${count('sessions')}`);
+	console.log(`  entities: ${count('entities')} (${count('entity_observations')} observations, ${count('entity_relations')} relations)`);
+	console.log('');
+	console.log(`  -> ${outDir} (${targetState === 'missing' ? 'will be created' : targetState === 'empty' ? 'empty, ok' : 'NOT EMPTY: a real run would refuse'})`);
+	console.log('  Pass -e or --export to write.');
+	console.log('');
+	console.log('Nothing was written.');
 	db.close();
 	process.exit(0);
 }
