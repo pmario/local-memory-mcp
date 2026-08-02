@@ -43,7 +43,7 @@ export function downloadsDir() {
 
 const HELP = `export-md.mjs — export the memory store to a markdown tree
 
-Usage: node scripts/export-md.mjs [options] [outDir]
+Usage: node scripts/dev-tools/export-md.mjs [options] [outDir]
 
 Without -e or --export this is a DRY RUN: it reports what would be
 exported and where, and writes nothing. Run bare to see this help plus
@@ -142,7 +142,7 @@ if (!doExport) {
 if (schemaDrift.length) {
 	console.error('Refusing: the store schema does not match this script, the export would lose data.');
 	for (const d of schemaDrift) console.error(`  ${d}`);
-	console.error('Update scripts/export-md.mjs (and import-md.mjs) for the new schema.');
+	console.error('Update scripts/dev-tools/export-md.mjs (and import-md.mjs) for the new schema.');
 	db.close();
 	process.exit(2);
 }

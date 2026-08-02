@@ -34,7 +34,7 @@ function defaultDataDir() {
 
 const HELP = `import-md.mjs — import a markdown tree into a memory store
 
-Usage: node scripts/import-md.mjs [options] [mdDir]
+Usage: node scripts/dev-tools/import-md.mjs [options] [mdDir]
 
 Arguments:
   mdDir                 markdown tree produced by export-md.mjs
@@ -128,7 +128,7 @@ const apply = argv.includes('--apply');
 const verify = argv.includes('--verify');
 const envelopeOut = flagValue('--envelope') ?? flagValue('--envelope-only');
 const envelopeOnly = argv.includes('--envelope-only');
-const serverPath = flagValue('--server') ?? fileURLToPath(new URL('../dist/server.js', import.meta.url));
+const serverPath = flagValue('--server') ?? fileURLToPath(new URL('../../dist/server.js', import.meta.url));
 
 if (!mdDir || !existsSync(mdDir)) {
 	console.error(`No markdown tree at "${mdDir ?? ''}". See --help.`);
