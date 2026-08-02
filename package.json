@@ -51,6 +51,8 @@
   },
   "scripts": {
     "build": "tsc && node scripts/copy-assets.mjs",
+    "export:md": "node scripts/export-md.mjs",
+    "import:md": "node scripts/import-md.mjs",
     "dev": "tsx src/server.ts",
     "test": "vitest run",
     "test:watch": "vitest",
