@@ -16,8 +16,8 @@
  * envelope (no duplicate imports).
  */
 import { spawn } from 'node:child_process';
-import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, readdirSync, writeFileSync, existsSync, lstatSync, realpathSync } from 'node:fs';
+import { join, sep } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -47,6 +47,11 @@ Run bare to see this help plus the dry-run prediction with defaults.
 The import is IDEMPOTENT: re-applying the same tree adds 0 records
 (existing ids are skipped, never updated), and generated ids are written
 back into the markdown files so new entries can never import twice.
+
+SKIP-AND-WARN: a tree file that is unreadable, escapes the tree, or is
+malformed is excluded rather than aborting the whole import. Every skip,
+naming the file and (where known) the line, is written to <mdDir>/error.log
+on a durable run so the bad files are findable and their bytes recoverable.
 
 Options:
   --apply               actually import (default is a dry run). Requires a
@@ -160,20 +165,75 @@ const NUM_FIELDS = new Set(['usageCount', 'confidence', 'verified', 'archived', 
 // [ are JSON; NUM_FIELDS are numbers; everything else is a raw string. The
 // body regains its exact original bytes by stripping the one trailing newline
 // the exporter added.
-function parseFile(path) {
-	const text = readFileSync(path, 'utf8');
-	const m = text.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-	if (!m) throw new Error(`${path}: no frontmatter block`);
-	const fields = {};
-	for (const line of m[1].split('\n')) {
-		if (line.trim() === '') continue;
-		const sep = line.indexOf(': ');
-		if (sep === -1) throw new Error(`${path}: unparseable frontmatter line "${line}"`);
-		const key = line.slice(0, sep);
-		const raw = line.slice(sep + 2);
-		fields[key] = /^["[]/.test(raw) ? JSON.parse(raw) : NUM_FIELDS.has(key) ? Number(raw) : raw;
+// Read a tree file, refusing anything that reaches outside the tree. Two
+// distinct reparse hazards on Windows and *nix:
+//   - a symlinked leaf .md (isSymbolicLink true, junctions included): refuse
+//     the link itself, so an id write-back can never follow it and clobber
+//     the target;
+//   - a junctioned or symlinked DIRECTORY component (e.g. learnings/ pointing
+//     elsewhere): the leaf is a real file, so only PHYSICAL containment
+//     catches it. realpathSync collapses every reparse point; the resolved
+//     path must stay under the tree's real root. This read-time guard runs
+//     before any id write-back, so aborting here protects the write too.
+// Skip-and-warn. A tree file or record that cannot be trusted or parsed
+// (symlink, escaping path, malformed frontmatter, wrong layout) is EXCLUDED
+// rather than aborting the whole import, and recorded in full so nothing is
+// silently dropped and the offending data stays recoverable. Genuine I/O
+// errors still propagate. The good records still import; the log lands at
+// <mdDir>/error.log on a durable run.
+const skipLog = [];
+const skip = (id, reason, data) => {
+	skipLog.push({ id, reason, data: data == null ? '' : String(data) });
+	console.warn(`  SKIPPED ${id}: ${reason}`);
+};
+
+// Parse a frontmatter value. Malformed JSON is an anticipated bad-input
+// condition on an untrusted tree, so a SyntaxError is reported to the caller;
+// any other error propagates.
+function parseFmValue(key, raw, numeric) {
+	if (/^["[]/.test(raw)) {
+		try {
+			return { ok: true, value: JSON.parse(raw) };
+		} catch (err) {
+			if (err instanceof SyntaxError) return { ok: false, reason: `invalid JSON for "${key}"` };
+			throw err;
+		}
 	}
-	return { fields, body: m[2].replace(/\n$/, '') };
+	return { ok: true, value: numeric.has(key) ? Number(raw) : raw };
+}
+
+const mdRealRoot = fromEnvelope ? null : realpathSync(mdDir);
+// Returns { ok, text } or { ok:false, reason } for the anticipated reparse
+// hazards; a vanished file (realpath/lstat throwing) is a real error and
+// propagates.
+function readTreeFile(path) {
+	if (lstatSync(path).isSymbolicLink()) return { ok: false, reason: 'symlinked tree file (refused)' };
+	const real = realpathSync(path);
+	if (real !== mdRealRoot && !real.startsWith(mdRealRoot + sep)) {
+		return { ok: false, reason: `resolves outside the tree (${real})` };
+	}
+	return { ok: true, text: readFileSync(path, 'utf8') };
+}
+
+function parseFile(path) {
+	const r = readTreeFile(path);
+	if (!r.ok) return r;
+	const m = r.text.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+	if (!m) return { ok: false, reason: 'line 1: no "---" frontmatter block at the top of the file', data: r.text };
+	const fields = {};
+	// Line 1 is the opening "---", so frontmatter line i (0-based) is file line i+2.
+	const fmLines = m[1].split('\n');
+	for (let i = 0; i < fmLines.length; i++) {
+		const line = fmLines[i];
+		if (line.trim() === '') continue;
+		const idx = line.indexOf(': ');
+		if (idx === -1) return { ok: false, reason: `frontmatter line ${i + 2}: not "key: value" -> "${line}"`, data: r.text };
+		const key = line.slice(0, idx);
+		const val = parseFmValue(key, line.slice(idx + 2), NUM_FIELDS);
+		if (!val.ok) return { ok: false, reason: `frontmatter line ${i + 2}: ${val.reason}`, data: r.text };
+		fields[key] = val.value;
+	}
+	return { ok: true, fields, body: m[2].replace(/\n$/, '') };
 }
 
 const listMd = (sub) => {
@@ -191,6 +251,12 @@ function ensureId(path, fields) {
 	if (fields.id) return fields.id;
 	const id = randomUUID();
 	if (persistIds) {
+		// The write-back rewrites the tree file in place. A symlinked entry
+		// would make writeFileSync follow it and clobber the target, so a
+		// hostile tree could overwrite an arbitrary file. Only touch a real file.
+		if (lstatSync(path).isSymbolicLink()) {
+			throw new Error(`${path}: refusing to write an id back through a symlink.`);
+		}
 		const text = readFileSync(path, 'utf8');
 		writeFileSync(path, text.replace(/^---\n/, `---\nid: ${id}\n`), 'utf8');
 		console.log(`assigned id ${id} to ${path}`);
@@ -202,7 +268,9 @@ function ensureId(path, fields) {
 
 const learnings = [];
 for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
-	const { fields: f, body } = parseFile(path);
+	const p = parseFile(path);
+	if (!p.ok) { skip(path, p.reason, p.data); continue; }
+	const { fields: f, body } = p;
 	learnings.push({
 		id: ensureId(path, f),
 		date: f.date ?? null,
@@ -226,11 +294,13 @@ for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 
 const decisions = [];
 for (const path of listMd('decisions')) {
-	const { fields: f, body } = parseFile(path);
+	const p = parseFile(path);
+	if (!p.ok) { skip(path, p.reason, p.data); continue; }
+	const { fields: f, body } = p;
 	const m = body.match(
 		/^# (.*)\n\n## Decision\n\n([\s\S]*?)\n\n## Reasoning\n\n([\s\S]*?)(?:\n\n## Alternatives considered\n\n([\s\S]*))?$/
 	);
-	if (!m) throw new Error(`${path}: body does not match the decision layout (see --help)`);
+	if (!m) { skip(path, 'body does not match the decision layout (see --help)', body); continue; }
 	decisions.push({
 		id: ensureId(path, f),
 		date: f.date ?? null,
@@ -249,7 +319,9 @@ for (const path of listMd('decisions')) {
 
 const sessions = [];
 for (const path of listMd('sessions')) {
-	const { fields: f, body } = parseFile(path);
+	const p = parseFile(path);
+	if (!p.ok) { skip(path, p.reason, p.data); continue; }
+	const { fields: f, body } = p;
 	const parts = body.split('\n\n## Open tasks\n\n');
 	const tasks = parts[1] ? parts[1].split('\n').map((l) => l.replace(/^- /, '')) : [];
 	sessions.push({
@@ -267,25 +339,56 @@ for (const path of listMd('sessions')) {
 // (they come from export-md.mjs); hand-authored id-less entities are not
 // supported, unlike learnings/decisions.
 const NUM_KV = new Set(['confidence', 'weight']);
-const parseKvBlock = (path, lines) => {
+const parseKvBlock = (lines) => {
 	const kv = {};
 	for (const line of lines) {
-		const sep = line.indexOf(': ');
-		if (sep === -1) throw new Error(`${path}: unparseable metadata line "${line}"`);
-		const key = line.slice(0, sep);
-		const raw = line.slice(sep + 2);
-		kv[key] = /^["[]/.test(raw) ? JSON.parse(raw) : NUM_KV.has(key) ? Number(raw) : raw;
+		const idx = line.indexOf(': ');
+		if (idx === -1) return { ok: false, reason: `unparseable metadata line "${line}"` };
+		const key = line.slice(0, idx);
+		const val = parseFmValue(key, line.slice(idx + 2), NUM_KV);
+		if (!val.ok) return { ok: false, reason: val.reason };
+		kv[key] = val.value;
 	}
-	return kv;
+	return { ok: true, kv };
 };
 
 const entities = [];
 const observations = [];
 for (const path of listMd('entities')) {
-	const { fields: f, body } = parseFile(path);
-	if (!f.id || !f.name || !f.type) throw new Error(`${path}: entity files require id, name and type in the frontmatter`);
+	const p = parseFile(path);
+	if (!p.ok) { skip(path, p.reason, p.data); continue; }
+	const { fields: f, body } = p;
+	if (!f.id || !f.name || !f.type) { skip(path, 'entity file requires id, name and type in the frontmatter', body); continue; }
 	const chunks = body.split(/\n(?=## )/);
 	const head = chunks[0].replace(/^# .*\n*/, '').replace(/\n+$/, '');
+	// Collect observations first; a malformed section skips the WHOLE entity
+	// so the entity and its observations import atomically or not at all.
+	const pending = [];
+	let bad = null;
+	for (const chunk of chunks.slice(1)) {
+		const m = chunk.match(/^## Observation (\S+)\n([\s\S]*)$/);
+		if (!m) {
+			if (/^## Relations/.test(chunk)) continue;
+			bad = `unexpected section "${chunk.split('\n')[0]}"`;
+			break;
+		}
+		const blank = m[2].indexOf('\n\n');
+		if (blank === -1) { bad = `observation ${m[1]} has no content block`; break; }
+		const kvr = parseKvBlock(m[2].slice(0, blank).split('\n'));
+		if (!kvr.ok) { bad = `observation ${m[1]}: ${kvr.reason}`; break; }
+		pending.push({
+			id: m[1],
+			entityId: f.id,
+			content: m[2].slice(blank + 2).replace(/\n+$/, ''),
+			source: kvr.kv.source ?? null,
+			sessionId: kvr.kv.sessionId ?? null,
+			validFrom: kvr.kv.validFrom ?? null,
+			validTo: kvr.kv.validTo ?? null,
+			confidence: kvr.kv.confidence ?? 0.7,
+			createdAt: kvr.kv.createdAt ?? null,
+		});
+	}
+	if (bad) { skip(path, bad, body); continue; }
 	entities.push({
 		id: f.id,
 		name: f.name,
@@ -295,45 +398,32 @@ for (const path of listMd('entities')) {
 		summary: head || null,
 		confidence: f.confidence ?? 0.7,
 	});
-	for (const chunk of chunks.slice(1)) {
-		const m = chunk.match(/^## Observation (\S+)\n([\s\S]*)$/);
-		if (!m) {
-			if (/^## Relations/.test(chunk)) continue;
-			throw new Error(`${path}: unexpected section "${chunk.split('\n')[0]}"`);
-		}
-		const blank = m[2].indexOf('\n\n');
-		if (blank === -1) throw new Error(`${path}: observation ${m[1]} has no content block`);
-		const kv = parseKvBlock(path, m[2].slice(0, blank).split('\n'));
-		observations.push({
-			id: m[1],
-			entityId: f.id,
-			content: m[2].slice(blank + 2).replace(/\n+$/, ''),
-			source: kv.source ?? null,
-			sessionId: kv.sessionId ?? null,
-			validFrom: kv.validFrom ?? null,
-			validTo: kv.validTo ?? null,
-			confidence: kv.confidence ?? 0.7,
-			createdAt: kv.createdAt ?? null,
-		});
-	}
+	observations.push(...pending);
 }
 
 // ── relations.md: canonical edge list, headings are decorative ──
 const relations = [];
 if (existsSync(join(mdDir, 'relations.md'))) {
-	const text = readFileSync(join(mdDir, 'relations.md'), 'utf8');
-	for (const chunk of text.split(/\n(?=## )/).slice(1)) {
-		const lines = chunk.split('\n').slice(1).filter((l) => l.trim() !== '');
-		const kv = parseKvBlock('relations.md', lines);
-		if (!kv.id || !kv.from || !kv.to || !kv.relationType) throw new Error(`relations.md: relation missing id/from/to/relationType`);
-		relations.push({
-			id: kv.id,
-			fromEntityId: kv.from,
-			toEntityId: kv.to,
-			relationType: kv.relationType,
-			weight: kv.weight ?? 1.0,
-			createdAt: kv.createdAt ?? null,
-		});
+	const relPath = join(mdDir, 'relations.md');
+	const r = readTreeFile(relPath);
+	if (!r.ok) {
+		skip(relPath, r.reason, '');
+	} else {
+		for (const chunk of r.text.split(/\n(?=## )/).slice(1)) {
+			const lines = chunk.split('\n').slice(1).filter((l) => l.trim() !== '');
+			const kvr = parseKvBlock(lines);
+			if (!kvr.ok) { skip(relPath, kvr.reason, chunk); continue; }
+			const kv = kvr.kv;
+			if (!kv.id || !kv.from || !kv.to || !kv.relationType) { skip(relPath, 'relation missing id/from/to/relationType', chunk); continue; }
+			relations.push({
+				id: kv.id,
+				fromEntityId: kv.from,
+				toEntityId: kv.to,
+				relationType: kv.relationType,
+				weight: kv.weight ?? 1.0,
+				createdAt: kv.createdAt ?? null,
+			});
+		}
 	}
 }
 
@@ -392,6 +482,25 @@ if (fromEnvelope) {
 	console.log(`Read ${fromEnvelope}: ${envelope.learnings.length} learnings, ${envelope.decisions.length} decisions, ${envelope.sessions.length} sessions, ${envelope.entities.length} entities, ${envelope.observations.length} observations, ${envelope.relations.length} relations`);
 } else {
 	console.log(`Read ${mdDir}: ${learnings.length} learnings, ${decisions.length} decisions, ${sessions.length} sessions, ${entities.length} entities, ${observations.length} observations, ${relations.length} relations`);
+	if (skipLog.length) {
+		console.log(`  ${skipLog.length} tree file(s) skipped as unreadable or malformed`);
+		// Durable runs record the skips in full so the bad files are findable
+		// and the offending bytes recoverable. A pure dry run only warns above.
+		if (persistIds) {
+			const lines = [
+				`# Import error log`,
+				`# tree: ${mdDir}`,
+				`# ${skipLog.length} file(s) skipped; the rest were read normally`,
+				`# each entry names the FILE PATH and, where known, the line number`,
+				'',
+			];
+			for (const s of skipLog) {
+				lines.push(`## ${s.id}`, `reason: ${s.reason}`, '', '--- file contents ---', s.data, '--- end ---', '');
+			}
+			writeFileSync(join(mdDir, 'error.log'), lines.join('\n'), 'utf8');
+			console.log(`  see ${join(mdDir, 'error.log')}`);
+		}
+	}
 }
 
 if (envelopeOut) {

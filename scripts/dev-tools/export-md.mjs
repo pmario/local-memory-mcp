@@ -14,7 +14,7 @@
  */
 import { createRequire } from 'node:module';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, sep } from 'node:path';
 import { homedir, platform } from 'node:os';
 
 const require = createRequire(import.meta.url);
@@ -52,6 +52,11 @@ the dry run.
 The export is IDEMPOTENT: the same store always produces a byte-identical
 tree. The target must be a NEW or EMPTY directory; the script never
 deletes anything, so remove a previous export yourself before re-running.
+
+SKIP-AND-WARN: a record that would corrupt the tree (crafted content or a
+filename clash, only possible in a poisoned store) is excluded rather than
+aborting the whole backup. Every skip, with the full offending data, is
+written to <outDir>/error.log so nothing is silently lost.
 
 Arguments:
   outDir            target directory
@@ -168,6 +173,36 @@ const slug = (text, max = 60) =>
 		.slice(0, max)
 		.replace(/-+$/, '') || 'untitled';
 
+// Every filename component is derived from store data, so ANY of them can be
+// hostile after a crafted --apply (see the memory_import validation gap). id
+// fragments, dates and entity_type are not free text but must still never
+// carry a path separator or "..": run each through slug so a filename can only
+// ever be a single, safe path segment.
+const part = (text) => slug(text, 40);
+
+// Reserved section headings the importer splits on. If record content that is
+// re-parsed by "## " (observations, decisions, sessions, entity summaries)
+// contained one of these verbatim, a re-import would fabricate sibling
+// records. Detected per record; such a record is skipped, not exported.
+const RESERVED_HEADING = /^## (Observation |Decision$|Reasoning$|Alternatives considered$|Open tasks$|Relations)/m;
+const reservedHeadingMatch = (text) => {
+	const m = text ? String(text).match(RESERVED_HEADING) : null;
+	return m ? m[0] : null;
+};
+
+// Skip-and-warn. A record that would corrupt the tree (reserved heading in
+// content, a filename collision, an escaping path, or an unsafe meta key) is
+// EXCLUDED from the export rather than aborting the whole backup, and recorded
+// here in full so nothing is silently lost and the offending data stays
+// recoverable. The good records still export; the log lands at <outDir>/error.log.
+const skipLog = [];
+// `what` is a HUMAN descriptor (table + natural name + id), so the log is
+// actionable without a UUID lookup, e.g. `entity "Evil" (tool) [aaaa…]`.
+const skip = (what, reason, data) => {
+	skipLog.push({ what, reason, data: data == null ? '' : String(data) });
+	console.warn(`  SKIPPED ${what} — ${reason}`);
+};
+
 // Frontmatter values must survive a line-based parser: anything risky
 // (newlines, leading bracket or quote, edge whitespace) is JSON-quoted and
 // the reader detects that by the first character.
@@ -177,24 +212,49 @@ const fmValue = (v) => {
 	const s = String(v);
 	return /[\r\n]/.test(s) || /^[["\s]/.test(s) || /\s$/.test(s) ? JSON.stringify(s) : s;
 };
+// Frontmatter keys must be bare identifiers. Record callers pass hardcoded
+// keys; only meta.md forwards store-controlled names, and those are
+// pre-filtered (and logged) before fm sees them, so this stays a silent
+// defensive drop.
+const isSafeKey = (k) => /^[A-Za-z0-9_]+$/.test(k);
 const fm = (pairs) => {
 	const lines = ['---'];
 	for (const [k, v] of Object.entries(pairs)) {
 		if (v === null || v === undefined || v === '') continue;
+		if (!isSafeKey(k)) continue;
 		lines.push(`${k}: ${fmValue(v)}`);
 	}
 	lines.push('---', '');
 	return lines.join('\n');
 };
 
-const write = (relPath, text) => {
-	const full = join(outDir, relPath);
+// Containment guard: the definitive path-traversal defense. Whatever the
+// filename components, the resolved absolute path must stay inside outDir.
+const outAbs = resolve(outDir);
+const write = (relPath, text, what) => {
+	const full = resolve(outDir, relPath);
+	// Definitive path-traversal backstop: the resolved path must stay inside
+	// outDir. With component sanitising this should never fire; if it does, the
+	// record is skipped rather than escaping.
+	if (full !== outAbs && !full.startsWith(outAbs + sep)) {
+		skip(what, `computed path escapes the target directory: ${relPath}`, text);
+		return null;
+	}
+	// Never overwrite. The target starts empty, so an existing file means two
+	// records sanitised to the same filename (crafted ids/entity_type can force
+	// this). Skip the clashing record instead of silently overwriting.
+	if (existsSync(full)) {
+		skip(what, `filename collision on ${relPath.replace(/\\/g, '/')}; another record already wrote it`, text);
+		return null;
+	}
 	mkdirSync(dirname(full), { recursive: true });
 	writeFileSync(full, text, 'utf8');
 	return relPath.replace(/\\/g, '/');
 };
 
 const index = { learnings: [], 'archived learnings': [], decisions: [], entities: [], sessions: [] };
+const wrote = { learnings: 0, decisions: 0, entities: 0, sessions: 0 };
+const skippedEntityIds = new Set();
 
 const learnings = db.prepare(
 	`SELECT id, date, category, content, project, tags_json, usage_count, last_used,
@@ -206,7 +266,7 @@ for (const l of learnings) {
 	const day = String(l.date).slice(0, 10);
 	const dir = l.archived ? 'learnings-archived' : 'learnings';
 	const rel = write(
-		join(dir, `${day}_${slug(l.content)}_${l.id.slice(0, 8)}.md`),
+		join(dir, `${part(day)}_${slug(l.content)}_${part(l.id.slice(0, 8))}.md`),
 		fm({
 			id: l.id,
 			date: l.date,
@@ -224,8 +284,11 @@ for (const l of learnings) {
 			importance: l.importance,
 			lifecycleState: l.lifecycle_state,
 			memoryType: l.memory_type,
-		}) + l.content + '\n'
+		}) + l.content + '\n',
+		`learning ${day} "${String(l.content).split('\n')[0].slice(0, 60)}" [${l.id}]`
 	);
+	if (!rel) continue;
+	wrote.learnings++;
 	index[l.archived ? 'archived learnings' : 'learnings'].push(
 		`- [${day} · ${l.category}${l.project ? ' · ' + l.project : ''}](${rel}) — ${String(l.content).split('\n')[0].slice(0, 100)}`
 	);
@@ -238,10 +301,16 @@ const decisions = db.prepare(
 ).all();
 for (const d of decisions) {
 	const day = String(d.date).slice(0, 10);
+	const dWhat = `decision "${d.title}" [${d.id}]`;
+	const hit = reservedHeadingMatch(`${d.decision}\n${d.reasoning}\n${d.alternatives ?? ''}`);
+	if (hit) {
+		skip(dWhat, `content contains reserved section heading ${JSON.stringify(hit)}`, `# ${d.title}\n\n## Decision\n\n${d.decision}\n\n## Reasoning\n\n${d.reasoning}${d.alternatives ? `\n\n## Alternatives considered\n\n${d.alternatives}` : ''}`);
+		continue;
+	}
 	let body = `# ${d.title}\n\n## Decision\n\n${d.decision}\n\n## Reasoning\n\n${d.reasoning}`;
 	if (d.alternatives) body += `\n\n## Alternatives considered\n\n${d.alternatives}`;
 	const rel = write(
-		join('decisions', `${day}_${slug(d.title)}_${d.id.slice(0, 8)}.md`),
+		join('decisions', `${part(day)}_${slug(d.title)}_${part(d.id.slice(0, 8))}.md`),
 		fm({
 			id: d.id,
 			date: d.date,
@@ -251,8 +320,11 @@ for (const d of decisions) {
 			source: d.source,
 			verified: d.verified,
 			verifiedAt: d.verified_at,
-		}) + body + '\n'
+		}) + body + '\n',
+		dWhat
 	);
+	if (!rel) continue;
+	wrote.decisions++;
 	index.decisions.push(`- [${day} · ${d.title}](${rel})`);
 }
 
@@ -287,9 +359,22 @@ const relDecoStmt = db.prepare(
 for (const e of entities) {
 	const obs = obsStmt.all(e.id);
 	const rels = relDecoStmt.all(e.id, e.id);
+	const eWhat = `entity "${e.name}" (${e.entity_type}) [${e.id}]`;
+	const summaryHit = reservedHeadingMatch(e.summary);
+	if (summaryHit) {
+		skip(eWhat, `summary contains reserved section heading ${JSON.stringify(summaryHit)}`, `# ${e.name}\n\n${e.summary ?? ''}`);
+		skippedEntityIds.add(e.id);
+		continue;
+	}
 	let body = `# ${e.name}\n\n`;
 	if (e.summary) body += `${e.summary}\n\n`;
+	let keptObs = 0;
 	for (const o of obs) {
+		const obsHit = reservedHeadingMatch(o.content);
+		if (obsHit) {
+			skip(`observation of entity "${e.name}" [${o.id}]`, `content contains reserved section heading ${JSON.stringify(obsHit)}`, o.content);
+			continue;
+		}
 		body += `## Observation ${o.id}\n`;
 		body += kvLines({
 			validFrom: o.valid_from,
@@ -300,6 +385,7 @@ for (const e of entities) {
 			source: o.source,
 		});
 		body += `\n\n${o.content}\n\n`;
+		keptObs++;
 	}
 	if (rels.length) {
 		body += `## Relations (regenerated, canonical in relations.md)\n\n`;
@@ -307,10 +393,13 @@ for (const e of entities) {
 		body += '\n';
 	}
 	const rel = write(
-		join('entities', `${e.entity_type}_${slug(e.name)}_${e.id.slice(0, 8)}.md`),
-		fm({ id: e.id, name: e.name, type: e.entity_type, created: e.created_at, updated: e.updated_at, confidence: e.confidence }) + body.replace(/\n+$/, '\n')
+		join('entities', `${part(e.entity_type)}_${slug(e.name)}_${part(e.id.slice(0, 8))}.md`),
+		fm({ id: e.id, name: e.name, type: e.entity_type, created: e.created_at, updated: e.updated_at, confidence: e.confidence }) + body.replace(/\n+$/, '\n'),
+		eWhat
 	);
-	index.entities.push(`- [${e.name} (${e.entity_type})](${rel}) — ${obs.length} observations`);
+	if (!rel) { skippedEntityIds.add(e.id); continue; }
+	wrote.entities++;
+	index.entities.push(`- [${e.name} (${e.entity_type})](${rel}) — ${keptObs} observations`);
 }
 
 const relations = db.prepare(
@@ -323,7 +412,13 @@ const relations = db.prepare(
 ).all();
 if (relations.length) {
 	let body = `# Relations\n\n`;
+	let keptRels = 0;
 	for (const r of relations) {
+		// A relation whose endpoint entity was skipped would dangle: drop it.
+		if (skippedEntityIds.has(r.from_entity_id) || skippedEntityIds.has(r.to_entity_id)) {
+			skip(`relation "${r.from_name}" —${r.relation_type}→ "${r.to_name}" [${r.id}]`, `an endpoint entity was itself skipped`, `${r.relation_type}: ${r.from_entity_id} -> ${r.to_entity_id}`);
+			continue;
+		}
 		body += `## ${r.from_name} —${r.relation_type}→ ${r.to_name}\n`;
 		body += kvLines({
 			id: r.id,
@@ -334,9 +429,11 @@ if (relations.length) {
 			createdAt: r.created_at,
 		});
 		body += '\n\n';
+		keptRels++;
 	}
-	write('relations.md', body.replace(/\n+$/, '\n'));
-	index.entities.push(`- [Relations](relations.md) — ${relations.length} edges`);
+	if (keptRels && write('relations.md', body.replace(/\n+$/, '\n'), 'relations.md')) {
+		index.entities.push(`- [Relations](relations.md) — ${keptRels} edges`);
+	}
 }
 
 const sessions = db.prepare(
@@ -344,29 +441,64 @@ const sessions = db.prepare(
 ).all();
 sessions.forEach((s, i) => {
 	const tasks = JSON.parse(s.tasks_json ?? '[]');
+	const sWhat = `session ${String(s.started_at).slice(0, 10)} [${s.id}]`;
+	const hit = reservedHeadingMatch(s.summary);
+	if (hit) {
+		skip(sWhat, `summary contains reserved section heading ${JSON.stringify(hit)}`, s.summary);
+		return;
+	}
 	let body = s.summary ?? '';
 	if (tasks.length) body += `\n\n## Open tasks\n\n${tasks.map((t) => `- ${t}`).join('\n')}`;
 	const rel = write(
-		join('sessions', `${String(i + 1).padStart(3, '0')}_${String(s.started_at).slice(0, 10)}_${s.id.slice(0, 8)}.md`),
-		fm({ id: s.id, startedAt: s.started_at, endedAt: s.ended_at, project: s.project }) + body + '\n'
+		join('sessions', `${String(i + 1).padStart(3, '0')}_${part(String(s.started_at).slice(0, 10))}_${part(s.id.slice(0, 8))}.md`),
+		fm({ id: s.id, startedAt: s.started_at, endedAt: s.ended_at, project: s.project }) + body + '\n',
+		sWhat
 	);
+	if (!rel) return;
+	wrote.sessions++;
 	index.sessions.push(`- [${String(s.started_at).slice(0, 16)}${s.project ? ' · ' + s.project : ''}](${rel})`);
 });
 
 // All meta keys, always: schema_version lets the tree self-describe its
 // vintage (the importer checks it); embedding_model/embedding_dim/first_run_at
-// are provenance owned by the server and are never pushed back on import.
+// are provenance owned by the server and are never pushed back on import. A
+// key that is not a bare identifier would inject frontmatter lines, so it is
+// skipped and logged rather than written.
 const metaPairs = {};
-for (const r of db.prepare(`SELECT key, value FROM meta ORDER BY key`).all()) metaPairs[r.key] = r.value;
-write('meta.md', fm(metaPairs) + 'Store metadata. profile_* keys and current_goal are imported; schema_version guards the round trip; all other keys are server-owned provenance.\n');
+for (const r of db.prepare(`SELECT key, value FROM meta ORDER BY key`).all()) {
+	if (!isSafeKey(r.key)) {
+		skip(`meta key ${JSON.stringify(r.key)}`, 'not a bare identifier; would inject frontmatter lines', `${r.key}: ${r.value}`);
+		continue;
+	}
+	metaPairs[r.key] = r.value;
+}
+write('meta.md', fm(metaPairs) + 'Store metadata. profile_* keys and current_goal are imported; schema_version guards the round trip; all other keys are server-owned provenance.\n', 'meta.md');
 
 let idx = `# Memory export\n\nSource: \`${dbPath}\` (read-only)\n\n`;
 for (const [section, lines] of Object.entries(index)) {
 	if (!lines.length) continue;
 	idx += `## ${section[0].toUpperCase() + section.slice(1)} (${lines.length})\n\n${lines.join('\n')}\n\n`;
 }
-write('INDEX.md', idx);
+write('INDEX.md', idx, 'INDEX.md');
+
+// Skipped records land in a readable log so nothing is silently lost and the
+// offending data stays recoverable. Each entry leads with a human descriptor
+// (table + natural name + id) so it can be located without a UUID lookup.
+if (skipLog.length) {
+	const lines = [
+		`# Export error log`,
+		`# source store: ${dbPath}`,
+		`# ${skipLog.length} record(s) skipped; the rest exported normally`,
+		`# to locate one: the [bracketed id] is its primary key, e.g. SELECT * FROM <table> WHERE id = '<id>'`,
+		'',
+	];
+	for (const s of skipLog) {
+		lines.push(`## ${s.what}`, `reason: ${s.reason}`, '', '--- data ---', s.data, '--- end ---', '');
+	}
+	writeFileSync(join(outDir, 'error.log'), lines.join('\n'), 'utf8');
+}
 
 db.close();
 console.log(`Exported to ${outDir}:`);
-console.log(`  ${learnings.length} learnings, ${decisions.length} decisions, ${entities.length} entities, ${sessions.length} sessions`);
+console.log(`  ${wrote.learnings} learnings, ${wrote.decisions} decisions, ${wrote.entities} entities, ${wrote.sessions} sessions`);
+if (skipLog.length) console.log(`  ${skipLog.length} record(s) skipped — see ${join(outDir, 'error.log')}`);

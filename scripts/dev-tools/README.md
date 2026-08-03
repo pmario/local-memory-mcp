@@ -73,6 +73,9 @@ selects another store.
 - Idempotent: the same store always produces a byte-identical tree.
 - Refuses (instead of silently losing data) when the store's columns or
   `schema_version` do not match what the script was written for.
+- Skip-and-warn: a record that would corrupt the tree (only possible in a
+  poisoned store) is excluded, not aborted, and logged in full to
+  `<outDir>/error.log`. Each entry names the record and how to find it.
 - Needs `npm install` only, no build.
 
 ## import-md.mjs: markdown tree to store
@@ -101,6 +104,10 @@ and FTS rebuild all apply.
 - `--verify` compares the tree field-by-field against the target database.
 - Refuses a tree or an existing target whose `schema_version` differs from
   the one the script was written for.
+- Skip-and-warn: an unreadable, escaping or malformed tree file is
+  excluded, not aborted; the store side is atomic (nothing is written
+  unless the whole envelope parses). Durable runs log each skip, with the
+  file path and line, to `<mdDir>/error.log`.
 
 ## Tests
 
