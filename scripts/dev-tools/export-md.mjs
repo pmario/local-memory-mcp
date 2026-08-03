@@ -7,7 +7,9 @@
  *
  * Every envelope field is carried in the file's frontmatter and the body is
  * preserved byte-exact: the writer appends exactly one newline, the reader
- * strips exactly one. The target must be a NEW or EMPTY directory: the
+ * strips exactly one. In bodies the importer re-parses by "## " sections,
+ * heading-like content lines are escaped (tree format 2), so body text can
+ * never fabricate a section. The target must be a NEW or EMPTY directory: the
  * script never deletes anything, and because every export starts from an
  * empty target, renamed, archived or deleted entries cannot linger as stale
  * files.
@@ -53,10 +55,17 @@ The export is IDEMPOTENT: the same store always produces a byte-identical
 tree. The target must be a NEW or EMPTY directory; the script never
 deletes anything, so remove a previous export yourself before re-running.
 
-SKIP-AND-WARN: a record that would corrupt the tree (crafted content or a
-filename clash, only possible in a poisoned store) is excluded rather than
-aborting the whole backup. Every skip, with the full offending data, is
-written to <outDir>/error.log so nothing is silently lost.
+SKIP-AND-WARN: a record that would corrupt the tree (a crafted name, title
+or id that cannot sit on its heading line, or a filename clash, only
+possible in a poisoned store) is excluded rather than aborting the whole
+backup. Every skip, with the full offending data, is written to
+<outDir>/error.log so nothing is silently lost.
+
+TREE FORMAT 2: in bodies that import-md.mjs re-parses by "## " sections
+(observations, summaries, decision fields, tasks), a content line that
+would read as a heading gains a leading backslash ("\## ") and the
+importer strips exactly one, so content can never fabricate a record.
+meta.md records tree_format: 2; the importer refuses a tree without it.
 
 Arguments:
   outDir            target directory
@@ -180,15 +189,24 @@ const slug = (text, max = 60) =>
 // ever be a single, safe path segment.
 const part = (text) => slug(text, 40);
 
-// Reserved section headings the importer splits on. If record content that is
-// re-parsed by "## " (observations, decisions, sessions, entity summaries)
-// contained one of these verbatim, a re-import would fabricate sibling
-// records. Detected per record; such a record is skipped, not exported.
-const RESERVED_HEADING = /^## (Observation |Decision$|Reasoning$|Alternatives considered$|Open tasks$|Relations)/m;
-const reservedHeadingMatch = (text) => {
-	const m = text ? String(text).match(RESERVED_HEADING) : null;
-	return m ? m[0] : null;
-};
+// Tree format version, recorded in meta.md and required by import-md.mjs.
+// Format 2 escapes heading-like content lines (escapeContent below) so that a
+// "## " line at column 0 is ALWAYS structural and body text can never
+// fabricate a sibling record on re-import.
+const TREE_FORMAT = '2';
+
+// Escape for bodies the importer re-parses by "## " sections (observation
+// content, entity summaries, decision fields, session summaries and tasks):
+// a line of backslashes followed by "## " gains one backslash, and the
+// importer strips exactly one, so the round trip stays byte-exact. Learning
+// bodies are verbatim and never re-parsed, so never escaped.
+const escapeContent = (text) => String(text).replace(/^(\\*## )/gm, '\\$1');
+
+// Decorative lines (per-entity relation lists, relations.md headings) embed
+// entity names and relation types; a crafted newline in one would start a new
+// line that could be structural, so decoration is flattened to one line. The
+// canonical values live in kv/frontmatter lines, which JSON-quote newlines.
+const oneLine = (text) => String(text).replace(/[\r\n]+/g, ' ');
 
 // Skip-and-warn. A record that would corrupt the tree (reserved heading in
 // content, a filename collision, an escaping path, or an unsafe meta key) is
@@ -301,14 +319,16 @@ const decisions = db.prepare(
 ).all();
 for (const d of decisions) {
 	const day = String(d.date).slice(0, 10);
-	const dWhat = `decision "${d.title}" [${d.id}]`;
-	const hit = reservedHeadingMatch(`${d.decision}\n${d.reasoning}\n${d.alternatives ?? ''}`);
-	if (hit) {
-		skip(dWhat, `content contains reserved section heading ${JSON.stringify(hit)}`, `# ${d.title}\n\n## Decision\n\n${d.decision}\n\n## Reasoning\n\n${d.reasoning}${d.alternatives ? `\n\n## Alternatives considered\n\n${d.alternatives}` : ''}`);
+	const dWhat = `decision "${oneLine(d.title)}" [${d.id}]`;
+	// The title lives on the "# <title>" heading line; a crafted line break in
+	// it would spill structural lines into the body, and escaping cannot help a
+	// heading. Such a title cannot be represented, so the record is skipped.
+	if (/[\r\n]/.test(String(d.title))) {
+		skip(dWhat, 'title contains a line break; the "# <title>" heading line cannot hold it', `# ${d.title}\n\n## Decision\n\n${d.decision}\n\n## Reasoning\n\n${d.reasoning}${d.alternatives ? `\n\n## Alternatives considered\n\n${d.alternatives}` : ''}`);
 		continue;
 	}
-	let body = `# ${d.title}\n\n## Decision\n\n${d.decision}\n\n## Reasoning\n\n${d.reasoning}`;
-	if (d.alternatives) body += `\n\n## Alternatives considered\n\n${d.alternatives}`;
+	let body = `# ${d.title}\n\n## Decision\n\n${escapeContent(d.decision)}\n\n## Reasoning\n\n${escapeContent(d.reasoning)}`;
+	if (d.alternatives) body += `\n\n## Alternatives considered\n\n${escapeContent(d.alternatives)}`;
 	const rel = write(
 		join('decisions', `${part(day)}_${slug(d.title)}_${part(d.id.slice(0, 8))}.md`),
 		fm({
@@ -359,20 +379,24 @@ const relDecoStmt = db.prepare(
 for (const e of entities) {
 	const obs = obsStmt.all(e.id);
 	const rels = relDecoStmt.all(e.id, e.id);
-	const eWhat = `entity "${e.name}" (${e.entity_type}) [${e.id}]`;
-	const summaryHit = reservedHeadingMatch(e.summary);
-	if (summaryHit) {
-		skip(eWhat, `summary contains reserved section heading ${JSON.stringify(summaryHit)}`, `# ${e.name}\n\n${e.summary ?? ''}`);
+	const eWhat = `entity "${oneLine(e.name)}" (${oneLine(e.entity_type)}) [${e.id}]`;
+	// The name lives on the "# <name>" heading line; a crafted line break in it
+	// would spill structural lines into the body (escaping cannot help a
+	// heading). Such a name cannot be represented, so the entity is skipped.
+	if (/[\r\n]/.test(e.name)) {
+		skip(eWhat, 'name contains a line break; the "# <name>" heading line cannot hold it', `# ${e.name}\n\n${e.summary ?? ''}`);
 		skippedEntityIds.add(e.id);
 		continue;
 	}
 	let body = `# ${e.name}\n\n`;
-	if (e.summary) body += `${e.summary}\n\n`;
+	if (e.summary) body += `${escapeContent(e.summary)}\n\n`;
 	let keptObs = 0;
 	for (const o of obs) {
-		const obsHit = reservedHeadingMatch(o.content);
-		if (obsHit) {
-			skip(`observation of entity "${e.name}" [${o.id}]`, `content contains reserved section heading ${JSON.stringify(obsHit)}`, o.content);
+		// The id sits raw on the "## Observation <id>" heading line and the
+		// importer reads it as one non-whitespace token; any whitespace in it is
+		// crafted and could spill structural lines, so that observation is skipped.
+		if (/\s/.test(o.id)) {
+			skip(`observation of entity "${oneLine(e.name)}" [${oneLine(o.id)}]`, 'id contains whitespace; the "## Observation <id>" heading line cannot hold it', o.content);
 			continue;
 		}
 		body += `## Observation ${o.id}\n`;
@@ -384,12 +408,12 @@ for (const e of entities) {
 			sessionId: o.session_id,
 			source: o.source,
 		});
-		body += `\n\n${o.content}\n\n`;
+		body += `\n\n${escapeContent(o.content)}\n\n`;
 		keptObs++;
 	}
 	if (rels.length) {
 		body += `## Relations (regenerated, canonical in relations.md)\n\n`;
-		for (const r of rels) body += `- ${r.from_name} —${r.relation_type}→ ${r.to_name}\n`;
+		for (const r of rels) body += `- ${oneLine(r.from_name)} —${oneLine(r.relation_type)}→ ${oneLine(r.to_name)}\n`;
 		body += '\n';
 	}
 	const rel = write(
@@ -416,10 +440,10 @@ if (relations.length) {
 	for (const r of relations) {
 		// A relation whose endpoint entity was skipped would dangle: drop it.
 		if (skippedEntityIds.has(r.from_entity_id) || skippedEntityIds.has(r.to_entity_id)) {
-			skip(`relation "${r.from_name}" —${r.relation_type}→ "${r.to_name}" [${r.id}]`, `an endpoint entity was itself skipped`, `${r.relation_type}: ${r.from_entity_id} -> ${r.to_entity_id}`);
+			skip(`relation "${oneLine(r.from_name)}" —${oneLine(r.relation_type)}→ "${oneLine(r.to_name)}" [${r.id}]`, `an endpoint entity was itself skipped`, `${r.relation_type}: ${r.from_entity_id} -> ${r.to_entity_id}`);
 			continue;
 		}
-		body += `## ${r.from_name} —${r.relation_type}→ ${r.to_name}\n`;
+		body += `## ${oneLine(r.from_name)} —${oneLine(r.relation_type)}→ ${oneLine(r.to_name)}\n`;
 		body += kvLines({
 			id: r.id,
 			from: r.from_entity_id,
@@ -442,13 +466,8 @@ const sessions = db.prepare(
 sessions.forEach((s, i) => {
 	const tasks = JSON.parse(s.tasks_json ?? '[]');
 	const sWhat = `session ${String(s.started_at).slice(0, 10)} [${s.id}]`;
-	const hit = reservedHeadingMatch(s.summary);
-	if (hit) {
-		skip(sWhat, `summary contains reserved section heading ${JSON.stringify(hit)}`, s.summary);
-		return;
-	}
-	let body = s.summary ?? '';
-	if (tasks.length) body += `\n\n## Open tasks\n\n${tasks.map((t) => `- ${t}`).join('\n')}`;
+	let body = s.summary == null ? '' : escapeContent(s.summary);
+	if (tasks.length) body += `\n\n## Open tasks\n\n${tasks.map((t) => `- ${escapeContent(t)}`).join('\n')}`;
 	const rel = write(
 		join('sessions', `${String(i + 1).padStart(3, '0')}_${part(String(s.started_at).slice(0, 10))}_${part(s.id.slice(0, 8))}.md`),
 		fm({ id: s.id, startedAt: s.started_at, endedAt: s.ended_at, project: s.project }) + body + '\n',
@@ -463,16 +482,22 @@ sessions.forEach((s, i) => {
 // vintage (the importer checks it); embedding_model/embedding_dim/first_run_at
 // are provenance owned by the server and are never pushed back on import. A
 // key that is not a bare identifier would inject frontmatter lines, so it is
-// skipped and logged rather than written.
-const metaPairs = {};
+// skipped and logged rather than written. tree_format belongs to the TREE,
+// not the store: it is written first, and a store key of that name would
+// spoof the format marker, so it is skipped too.
+const metaPairs = { tree_format: TREE_FORMAT };
 for (const r of db.prepare(`SELECT key, value FROM meta ORDER BY key`).all()) {
 	if (!isSafeKey(r.key)) {
 		skip(`meta key ${JSON.stringify(r.key)}`, 'not a bare identifier; would inject frontmatter lines', `${r.key}: ${r.value}`);
 		continue;
 	}
+	if (r.key === 'tree_format') {
+		skip(`meta key "tree_format"`, 'reserved for the tree format marker', `${r.key}: ${r.value}`);
+		continue;
+	}
 	metaPairs[r.key] = r.value;
 }
-write('meta.md', fm(metaPairs) + 'Store metadata. profile_* keys and current_goal are imported; schema_version guards the round trip; all other keys are server-owned provenance.\n', 'meta.md');
+write('meta.md', fm(metaPairs) + 'Store metadata. tree_format is the tree\'s own format marker (not a store key); profile_* keys and current_goal are imported; schema_version guards the round trip; all other keys are server-owned provenance.\n', 'meta.md');
 
 let idx = `# Memory export\n\nSource: \`${dbPath}\` (read-only)\n\n`;
 for (const [section, lines] of Object.entries(index)) {

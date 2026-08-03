@@ -54,6 +54,23 @@ Cursor, anything connected). This applies on every OS.
   "succeeds", running servers keep writing to the detached inode, and
   the next session silently starts an empty store.
 
+## Tree format 2: what you see is what you import
+
+Bodies that the importer re-parses by `## ` sections (observation content,
+entity summaries, decision fields, session summaries and tasks) are
+escaped: a content line that would read as a heading gains a leading
+backslash (`\## `), and the importer strips exactly one after the
+structural parse. A `## ` line at column 0 is therefore always structural,
+so body text can never fabricate a sibling record and the sections a
+reader sees in a tree are exactly the records the parser produces.
+Learning bodies are verbatim (they are never re-parsed) and stay
+unescaped. `meta.md` records `tree_format: 2`; the importer refuses a
+tree without the marker, so add the line to a hand-authored tree.
+
+A foreign tree or envelope is still untrusted **data**: ids and field
+values are imported as-is (the server's `memory_import` does not validate
+them, upstream issue #29). Review foreign input before `--apply`.
+
 ## export-md.mjs: store to markdown tree
 
 ```
@@ -73,9 +90,13 @@ selects another store.
 - Idempotent: the same store always produces a byte-identical tree.
 - Refuses (instead of silently losing data) when the store's columns or
   `schema_version` do not match what the script was written for.
-- Skip-and-warn: a record that would corrupt the tree (only possible in a
-  poisoned store) is excluded, not aborted, and logged in full to
-  `<outDir>/error.log`. Each entry names the record and how to find it.
+- Heading-like content lines are escaped (`\## `, see tree format above),
+  so records whose content contains them are exported, not skipped.
+- Skip-and-warn: a record that cannot be represented at all (a name or
+  title with a line break, an id with whitespace, a filename clash; only
+  possible in a poisoned store) is excluded, not aborted, and logged in
+  full to `<outDir>/error.log`. Each entry names the record and how to
+  find it.
 - Needs `npm install` only, no build.
 
 ## import-md.mjs: markdown tree to store
@@ -102,8 +123,9 @@ and FTS rebuild all apply.
   tree; it cannot be combined with a tree argument or the envelope output
   flags.
 - `--verify` compares the tree field-by-field against the target database.
-- Refuses a tree or an existing target whose `schema_version` differs from
-  the one the script was written for.
+- Refuses a tree whose `meta.md` does not record `tree_format: 2` (see
+  tree format above), and a tree or an existing target whose
+  `schema_version` differs from the one the script was written for.
 - Skip-and-warn: an unreadable, escaping or malformed tree file is
   excluded, not aborted; the store side is atomic (nothing is written
   unless the whole envelope parses). Durable runs log each skip, with the
@@ -113,4 +135,5 @@ and FTS rebuild all apply.
 
 The main test suite pins both scripts to the shipped schema
 (`schema-pin.test.mjs`) and fails the moment a schema change requires
-updating them.
+updating them, and covers the tree-format escaping round trip and the
+structural-injection guard (`md-tree-format.test.mjs`).

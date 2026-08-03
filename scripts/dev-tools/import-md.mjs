@@ -6,6 +6,13 @@
  * import path means validation, re-embedding, FTS rebuild and FK-safe
  * ordering all apply; this script never writes SQL itself.
  *
+ * The tree is FORMAT 2: in re-parsed bodies, heading-like content lines
+ * arrive escaped ("\## ") and are unescaped after the structural parse, so a
+ * "## " line at column 0 is always structural and content can never
+ * fabricate a record. meta.md must record tree_format: 2; a tree without the
+ * marker is refused, because parsing it with these rules would reintroduce
+ * exactly that ambiguity.
+ *
  * The default run is a DRY RUN (validate + predict, write nothing); only
  * --apply imports. memory_import is additive (INSERT OR IGNORE on id):
  * existing ids are skipped, never updated, so re-applying the same tree is a
@@ -82,13 +89,19 @@ Options:
   --help                show this help
 
 Caveats:
+  meta.md must record tree_format: 2 (export-md.mjs writes it; add the
+  line to a hand-authored tree yourself). In re-parsed bodies the exporter
+  escapes heading-like content lines ("## " gains a leading backslash) and
+  this importer strips exactly one, so a "## " line at column 0 is always
+  structural: the sections the tree shows are the records it imports.
   Decision files are parsed by their "## Decision" / "## Reasoning" /
   "## Alternatives considered" headings; entity files by their
   "## Observation <id>" sections (entity files therefore require ids and
-  cannot be hand-authored without them). Content must not itself contain
-  lines starting with "## ". The import refuses a tree or an existing
-  target whose schema_version differs from the one this script was
-  written for, and flags a freshly created store that ends up on one.
+  cannot be hand-authored without them). The import refuses a tree or an
+  existing target whose schema_version differs from the one this script
+  was written for, and flags a freshly created store that ends up on one.
+  A foreign tree or envelope is still untrusted DATA: ids and field values
+  are imported as-is (see upstream issue #29), so review it before --apply.
 `;
 
 // Same resolution as export-md.mjs: xdg-user-dirs on Linux, ~/Downloads else.
@@ -125,6 +138,9 @@ const targetDb = flagValue('--db') ?? process.env.MEMORY_DB_PATH ?? join(default
 // existing target on a version mismatch and flag a freshly created store
 // that ends up on an unexpected version.
 const EXPECTED_SCHEMA_VERSION = '2';
+// Tree format this parser reads (see export-md.mjs). Checked against
+// meta.md's tree_format BEFORE any tree file is parsed.
+const EXPECTED_TREE_FORMAT = '2';
 function schemaVersionOf(path) {
 	const Database = require('better-sqlite3');
 	const sdb = new Database(path, { readonly: true });
@@ -202,6 +218,12 @@ function parseFmValue(key, raw, numeric) {
 	return { ok: true, value: numeric.has(key) ? Number(raw) : raw };
 }
 
+// Inverse of export-md.mjs's escapeContent (tree format 2): AFTER the
+// structural split, a body line of backslashes followed by "## " loses
+// exactly one backslash. Only re-parsed bodies are escaped; learning bodies
+// are verbatim.
+const unescapeContent = (text) => text.replace(/^\\(\\*## )/gm, '$1');
+
 const mdRealRoot = fromEnvelope ? null : realpathSync(mdDir);
 // Returns { ok, text } or { ok:false, reason } for the anticipated reparse
 // hazards; a vanished file (realpath/lstat throwing) is a real error and
@@ -242,6 +264,42 @@ const listMd = (sub) => {
 	if (!existsSync(dir)) return [];
 	return readdirSync(dir).filter((f) => f.endsWith('.md')).map((f) => join(dir, f));
 };
+
+// ── meta.md first: the tree must identify its format before anything is
+// parsed. tree_format says which parsing rules (the "\## " escaping) the
+// bodies were written for; running these rules on an unmarked tree would
+// reintroduce exactly the content-can-be-structural ambiguity format 2
+// removes, so a missing or foreign marker refuses the WHOLE tree (this is a
+// vintage problem, not a bad record, hence refuse over skip-and-warn — same
+// as a schema_version mismatch). profile_*, current_goal and schema_version
+// ride along into the envelope as before.
+const profile = {};
+let goal = null;
+let treeSchemaVersion = null;
+if (!fromEnvelope) {
+	const metaPath = join(mdDir, 'meta.md');
+	const metaParsed = existsSync(metaPath) ? parseFile(metaPath) : { ok: false, reason: 'meta.md is missing' };
+	if (!metaParsed.ok) {
+		console.error(`Refusing: ${metaPath}: ${metaParsed.reason}.`);
+		console.error(`A format-${EXPECTED_TREE_FORMAT} tree carries a meta.md whose frontmatter records "tree_format: ${EXPECTED_TREE_FORMAT}". Re-export with the current export-md.mjs, or add the line to a hand-authored tree.`);
+		process.exit(2);
+	}
+	const treeFormat = metaParsed.fields.tree_format == null ? null : String(metaParsed.fields.tree_format);
+	if (treeFormat !== EXPECTED_TREE_FORMAT) {
+		console.error(`Refusing: the tree records ${treeFormat === null ? 'no tree_format' : `tree_format ${treeFormat}`}, this script reads format ${EXPECTED_TREE_FORMAT}.`);
+		console.error(`Re-export with the current export-md.mjs, or add "tree_format: ${EXPECTED_TREE_FORMAT}" to meta.md if the tree's bodies already use its escaping ("\\## ").`);
+		process.exit(2);
+	}
+	for (const [k, v] of Object.entries(metaParsed.fields)) {
+		if (k.startsWith('profile_')) profile[k.replace(/^profile_/, '')] = v;
+		if (k === 'current_goal') goal = v;
+		if (k === 'schema_version') treeSchemaVersion = String(v);
+	}
+	if (treeSchemaVersion !== null && treeSchemaVersion !== EXPECTED_SCHEMA_VERSION) {
+		console.error(`Refusing: the tree records schema_version ${treeSchemaVersion}, this script was written for ${EXPECTED_SCHEMA_VERSION}. Re-export with the matching script.`);
+		process.exit(2);
+	}
+}
 
 // Ids are written back only when this run produces durable output (--apply
 // or an envelope file); a pure dry run must not touch the tree, and an
@@ -305,9 +363,9 @@ for (const path of listMd('decisions')) {
 		id: ensureId(path, f),
 		date: f.date ?? null,
 		title: m[1],
-		decision: m[2],
-		reasoning: m[3],
-		alternatives: m[4] ?? null,
+		decision: unescapeContent(m[2]),
+		reasoning: unescapeContent(m[3]),
+		alternatives: m[4] == null ? null : unescapeContent(m[4]),
 		project: f.project ?? null,
 		tags: f.tags ?? [],
 		confidence: f.confidence ?? 0.7,
@@ -323,13 +381,13 @@ for (const path of listMd('sessions')) {
 	if (!p.ok) { skip(path, p.reason, p.data); continue; }
 	const { fields: f, body } = p;
 	const parts = body.split('\n\n## Open tasks\n\n');
-	const tasks = parts[1] ? parts[1].split('\n').map((l) => l.replace(/^- /, '')) : [];
+	const tasks = parts[1] ? parts[1].split('\n').map((l) => unescapeContent(l.replace(/^- /, ''))) : [];
 	sessions.push({
 		id: f.id,
 		startedAt: f.startedAt ?? null,
 		endedAt: f.endedAt ?? null,
 		project: f.project ?? null,
-		summary: parts[0] || null,
+		summary: parts[0] ? unescapeContent(parts[0]) : null,
 		tasks,
 	});
 }
@@ -360,7 +418,7 @@ for (const path of listMd('entities')) {
 	const { fields: f, body } = p;
 	if (!f.id || !f.name || !f.type) { skip(path, 'entity file requires id, name and type in the frontmatter', body); continue; }
 	const chunks = body.split(/\n(?=## )/);
-	const head = chunks[0].replace(/^# .*\n*/, '').replace(/\n+$/, '');
+	const head = unescapeContent(chunks[0].replace(/^# .*\n*/, '').replace(/\n+$/, ''));
 	// Collect observations first; a malformed section skips the WHOLE entity
 	// so the entity and its observations import atomically or not at all.
 	const pending = [];
@@ -379,7 +437,7 @@ for (const path of listMd('entities')) {
 		pending.push({
 			id: m[1],
 			entityId: f.id,
-			content: m[2].slice(blank + 2).replace(/\n+$/, ''),
+			content: unescapeContent(m[2].slice(blank + 2).replace(/\n+$/, '')),
 			source: kvr.kv.source ?? null,
 			sessionId: kvr.kv.sessionId ?? null,
 			validFrom: kvr.kv.validFrom ?? null,
@@ -425,22 +483,6 @@ if (existsSync(join(mdDir, 'relations.md'))) {
 			});
 		}
 	}
-}
-
-const profile = {};
-let goal = null;
-let treeSchemaVersion = null;
-if (!fromEnvelope && existsSync(join(mdDir, 'meta.md'))) {
-	const { fields: f } = parseFile(join(mdDir, 'meta.md'));
-	for (const [k, v] of Object.entries(f)) {
-		if (k.startsWith('profile_')) profile[k.replace(/^profile_/, '')] = v;
-		if (k === 'current_goal') goal = v;
-		if (k === 'schema_version') treeSchemaVersion = String(v);
-	}
-}
-if (treeSchemaVersion !== null && treeSchemaVersion !== EXPECTED_SCHEMA_VERSION) {
-	console.error(`Refusing: the tree records schema_version ${treeSchemaVersion}, this script was written for ${EXPECTED_SCHEMA_VERSION}. Re-export with the matching script.`);
-	process.exit(2);
 }
 
 let envelope = {
