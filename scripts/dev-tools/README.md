@@ -122,7 +122,21 @@ and FTS rebuild all apply.
 - `--from-envelope <file>` imports an existing JSON envelope instead of a
   tree; it cannot be combined with a tree argument or the envelope output
   flags.
-- `--verify` compares the tree field-by-field against the target database.
+- `--verify` compares the tree field-by-field against the target database;
+  mismatches land in `<mdDir>/verify.log` and set exit code 1. That is the
+  modification detector: edit a tree file, `--verify` names the entry and
+  field that now differ from the store.
+- `--update` (with `--apply`; implies `--merge`) pushes tree-side edits of
+  existing learnings back through the server's `memory_learn_update`. Only content,
+  confidence and tags can change; a differing category, project, source,
+  memoryType or date is reported and left untouched (archive-and-rewrite
+  is the only remedy). The dry run predicts the updates. Learnings only.
+  **Caution:** an update overwrites the stored value with no history, and
+  it waives the import's "existing rows are never touched" guarantee, so a
+  foreign tree carrying your ids could rewrite what you already know.
+  Export a backup first; review the dry run before updating from any tree
+  you did not export yourself. Updates run per entry, not as one
+  transaction.
 - Refuses a tree whose `meta.md` does not record `tree_format: 2` (see
   tree format above), and a tree or an existing target whose
   `schema_version` differs from the one the script was written for.

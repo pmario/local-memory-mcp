@@ -131,6 +131,22 @@ describe('tree format 2: heading-like content', () => {
 		expect(r.stderr).toContain('tree_format');
 	});
 
+	it('--update dry run predicts tree-side edits, --verify records them durably', () => {
+		const tree5 = join(tmp, 'tree5');
+		cpSync(tree, tree5, { recursive: true });
+		const dir = join(tree5, 'learnings');
+		const lPath = join(dir, readdirSync(dir).find((f) => f.endsWith('_11111111.md')));
+		writeFileSync(lPath, readFileSync(lPath, 'utf8') + 'appended edit line\n', 'utf8');
+		const upd = run(IMPORT, [tree5, '--db', store, '--update']);
+		expect(upd.status, upd.stderr).toBe(0);
+		expect(upd.stdout).toContain('--update: 1 existing learning(s) would be updated');
+		expect(upd.stdout).toContain('11111111-1111-1111-1111-111111111111: content');
+		const ver = run(IMPORT, [tree5, '--db', store, '--verify']);
+		expect(ver.status).toBe(1);
+		const log = readFileSync(join(tree5, 'verify.log'), 'utf8');
+		expect(log).toContain('MISMATCH learning 11111111-1111-1111-1111-111111111111 .content');
+	});
+
 	it('refuses a tree of a foreign format version', () => {
 		const tree4 = join(tmp, 'tree4');
 		cpSync(tree, tree4, { recursive: true });

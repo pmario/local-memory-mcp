@@ -74,6 +74,21 @@ Options:
                         existing ids are skipped, never updated; re-running
                         the same import is a no-op). Only meaningful with
                         --apply; --merge alone is still a dry run.
+  --update              also push tree-side EDITS of existing learnings
+                        back into the store, via the server's
+                        memory_learn_update (validation and re-embedding
+                        apply). Only content, confidence and tags can
+                        change; a differing category, project, source,
+                        memoryType or date is reported and left untouched,
+                        archive-and-rewrite being the only remedy. Dry run
+                        predicts the updates; --apply --update performs
+                        them (--update implies --merge). Learnings only.
+                        CAUTION: an update OVERWRITES the stored value with
+                        no history, and it waives the import's "existing
+                        rows are never touched" guarantee. Export a backup
+                        first, and review the dry run before updating from
+                        a tree you did not export yourself. Updates run
+                        per entry, not as one transaction.
   --envelope <file>     also write the intermediate JSON envelope
   --envelope-only <file>  write the envelope and stop (no server, no import)
                         Envelope output assigns missing ids (write-back), so
@@ -85,7 +100,8 @@ Options:
                         repository; run "npm run build" first)
   --verify              compare the tree field-by-field against the target
                         database (with --apply: after the import) and report
-                        mismatches
+                        mismatches; they also land in <mdDir>/verify.log and
+                        set exit code 1, so the answer survives the console
   --help                show this help
 
 Caveats:
@@ -148,9 +164,13 @@ function schemaVersionOf(path) {
 	sdb.close();
 	return v;
 }
-const merge = argv.includes('--merge');
 const apply = argv.includes('--apply');
 const verify = argv.includes('--verify');
+const doUpdate = argv.includes('--update');
+// --update cannot mean anything without touching an existing store, so it
+// implies --merge: demanding the weaker consent alongside the stronger one
+// would be friction, not safety.
+const merge = argv.includes('--merge') || doUpdate;
 const envelopeOut = flagValue('--envelope') ?? flagValue('--envelope-only');
 const envelopeOnly = argv.includes('--envelope-only');
 const serverPath = flagValue('--server') ?? fileURLToPath(new URL('../../dist/server.js', import.meta.url));
@@ -325,12 +345,17 @@ function ensureId(path, fields) {
 }
 
 const learnings = [];
+// --update must never push an envelope DEFAULT over a stored value, so
+// remember whether the file itself carried each updatable field.
+const fieldPresence = new Map();
 for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 	const p = parseFile(path);
 	if (!p.ok) { skip(path, p.reason, p.data); continue; }
 	const { fields: f, body } = p;
+	const lid = ensureId(path, f);
+	fieldPresence.set(lid, { confidence: f.confidence !== undefined, tags: f.tags !== undefined });
 	learnings.push({
-		id: ensureId(path, f),
+		id: lid,
 		date: f.date ?? null,
 		category: f.category,
 		content: body,
@@ -545,6 +570,40 @@ if (fromEnvelope) {
 	}
 }
 
+// ── --update: learnings whose tree side differs from the target store ──
+// Only the fields memory_learn_update can change are pushed (content,
+// confidence, tags). A differing identity field is collected as a warning
+// and left alone: the server cannot change it, archive-and-rewrite is the
+// only remedy. A field absent from a hand-authored file is never pushed,
+// so its envelope default cannot clobber the stored value.
+const updates = [];
+const updateWarnings = [];
+if (doUpdate && existsSync(targetDb)) {
+	const Database = require('better-sqlite3');
+	const udb = new Database(targetDb, { readonly: true });
+	const rows = new Map(udb.prepare('SELECT * FROM learnings').all().map((r) => [r.id, r]));
+	udb.close();
+	for (const l of envelope.learnings) {
+		const r = rows.get(l.id);
+		if (!r) continue;
+		const present = fieldPresence.get(l.id) ?? { confidence: true, tags: true };
+		const set = {};
+		if (l.content !== r.content) set.content = l.content;
+		if (present.confidence && l.confidence !== r.confidence) set.confidence = l.confidence;
+		if (present.tags && JSON.stringify(l.tags) !== JSON.stringify(JSON.parse(r.tags_json))) set.tags = l.tags;
+		if (Object.keys(set).length) updates.push({ id: l.id, set });
+		for (const [field, tree, db] of [
+			['category', l.category, r.category],
+			['project', l.project ?? null, r.project],
+			['source', l.source ?? null, r.source],
+			['memoryType', l.memoryType, r.memory_type],
+			['date', l.date, r.date],
+		]) {
+			if (tree !== db) updateWarnings.push(`${l.id}: ${field} differs (tree ${JSON.stringify(tree)}, store ${JSON.stringify(db)}); memory_learn_update cannot change it, archive-and-rewrite instead`);
+		}
+	}
+}
+
 if (envelopeOut) {
 	writeFileSync(envelopeOut, JSON.stringify(envelope, null, '\t') + '\n', 'utf8');
 	console.log(`Envelope written to ${envelopeOut}`);
@@ -556,17 +615,73 @@ function runVerify() {
 	const Database = require('better-sqlite3');
 	const vdb = new Database(targetDb, { readonly: true });
 	let mismatches = 0;
+	// Mismatches also land in <mdDir>/verify.log: the exit code alone says
+	// only THAT the tree and store disagree, the log records WHERE, so the
+	// answer survives the console scrollback.
+	const reportLines = [];
+	const report = (line) => {
+		reportLines.push(line);
+		console.log(line);
+	};
 	const norm = (v) => (v === undefined || v === '' ? null : v);
+	// Minimal dependency-free diff: trim the common line prefix and suffix,
+	// print the one changed region. When that region is one line on each
+	// side (the usual case: store bodies are single-line paragraphs), narrow
+	// further to the changed WORDS with a little context. Multiple separate
+	// edits collapse into one region; still exact for the single-edit case.
+	const CONTEXT_WORDS = 6;
+	const wordDiff = (oldLine, newLine) => {
+		const O = oldLine.split(' ');
+		const N = newLine.split(' ');
+		let p = 0;
+		while (p < O.length && p < N.length && O[p] === N[p]) p++;
+		let sO = O.length;
+		let sN = N.length;
+		while (sO > p && sN > p && O[sO - 1] === N[sN - 1]) {
+			sO--;
+			sN--;
+		}
+		const ctxL = O.slice(Math.max(0, p - CONTEXT_WORDS), p).join(' ');
+		const ctxR = O.slice(sO, sO + CONTEXT_WORDS).join(' ');
+		const wrap = (mid) => `${p > CONTEXT_WORDS ? '... ' : ''}${ctxL} [${mid}] ${ctxR}${sO + CONTEXT_WORDS < O.length ? ' ...' : ''}`;
+		return [`- ${wrap(O.slice(p, sO).join(' '))}`, `+ ${wrap(N.slice(p, sN).join(' '))}`];
+	};
+	const lineDiff = (oldText, newText) => {
+		const O = oldText.split('\n');
+		const N = newText.split('\n');
+		let start = 0;
+		while (start < O.length && start < N.length && O[start] === N[start]) start++;
+		let endO = O.length;
+		let endN = N.length;
+		while (endO > start && endN > start && O[endO - 1] === N[endN - 1]) {
+			endO--;
+			endN--;
+		}
+		const lines = [];
+		if (start > 0) lines.push(`  ... ${start} identical line(s)`);
+		if (endO - start === 1 && endN - start === 1) {
+			lines.push(...wordDiff(O[start], N[start]));
+		} else {
+			for (const l of O.slice(start, endO)) lines.push(`- ${l}`);
+			for (const l of N.slice(start, endN)) lines.push(`+ ${l}`);
+		}
+		if (O.length - endO > 0) lines.push(`  ... ${O.length - endO} identical line(s)`);
+		return lines.join('\n');
+	};
 	const compare = (kind, id, field, mdVal, dbVal) => {
 		if (JSON.stringify(norm(mdVal)) !== JSON.stringify(norm(dbVal))) {
 			mismatches++;
-			console.log(`MISMATCH ${kind} ${id} .${field}:\n  md: ${JSON.stringify(mdVal)?.slice(0, 120)}\n  db: ${JSON.stringify(dbVal)?.slice(0, 120)}`);
+			if (typeof mdVal === 'string' && typeof dbVal === 'string' && (mdVal.includes('\n') || dbVal.includes('\n') || mdVal.length > 120 || dbVal.length > 120)) {
+				report(`MISMATCH ${kind} ${id} .${field}: diff (- store, + tree)\n${lineDiff(dbVal, mdVal)}`);
+			} else {
+				report(`MISMATCH ${kind} ${id} .${field}:\n  md: ${JSON.stringify(mdVal)?.slice(0, 120)}\n  db: ${JSON.stringify(dbVal)?.slice(0, 120)}`);
+			}
 		}
 	};
 	const dbLearnings = new Map(vdb.prepare('SELECT * FROM learnings').all().map((r) => [r.id, r]));
 	for (const l of envelope.learnings) {
 		const r = dbLearnings.get(l.id);
-		if (!r) { mismatches++; console.log(`MISSING in DB: learning ${l.id}`); continue; }
+		if (!r) { mismatches++; report(`MISSING in DB: learning ${l.id}`); continue; }
 		compare('learning', l.id, 'date', l.date, r.date);
 		compare('learning', l.id, 'category', l.category, r.category);
 		compare('learning', l.id, 'content', l.content, r.content);
@@ -584,11 +699,11 @@ function runVerify() {
 		compare('learning', l.id, 'lifecycleState', l.lifecycleState, r.lifecycle_state);
 		compare('learning', l.id, 'memoryType', l.memoryType, r.memory_type);
 	}
-	if (envelope.learnings.length !== dbLearnings.size) { mismatches++; console.log(`COUNT: md has ${envelope.learnings.length} learnings, DB has ${dbLearnings.size}`); }
+	if (envelope.learnings.length !== dbLearnings.size) { mismatches++; report(`COUNT: md has ${envelope.learnings.length} learnings, DB has ${dbLearnings.size}`); }
 	const dbDecisions = new Map(vdb.prepare('SELECT * FROM decisions').all().map((r) => [r.id, r]));
 	for (const d of envelope.decisions) {
 		const r = dbDecisions.get(d.id);
-		if (!r) { mismatches++; console.log(`MISSING in DB: decision ${d.id}`); continue; }
+		if (!r) { mismatches++; report(`MISSING in DB: decision ${d.id}`); continue; }
 		compare('decision', d.id, 'title', d.title, r.title);
 		compare('decision', d.id, 'decision', d.decision, r.decision);
 		compare('decision', d.id, 'reasoning', d.reasoning, r.reasoning);
@@ -599,7 +714,7 @@ function runVerify() {
 	const dbSessions = new Map(vdb.prepare('SELECT * FROM sessions').all().map((r) => [r.id, r]));
 	for (const s of envelope.sessions) {
 		const r = dbSessions.get(s.id);
-		if (!r) { mismatches++; console.log(`MISSING in DB: session ${s.id}`); continue; }
+		if (!r) { mismatches++; report(`MISSING in DB: session ${s.id}`); continue; }
 		compare('session', s.id, 'summary', s.summary, r.summary);
 		compare('session', s.id, 'tasks', s.tasks, JSON.parse(r.tasks_json ?? '[]'));
 		compare('session', s.id, 'project', s.project, r.project);
@@ -607,7 +722,7 @@ function runVerify() {
 	const dbEntities = new Map(vdb.prepare('SELECT * FROM entities').all().map((r) => [r.id, r]));
 	for (const e of envelope.entities) {
 		const r = dbEntities.get(e.id);
-		if (!r) { mismatches++; console.log(`MISSING in DB: entity ${e.id}`); continue; }
+		if (!r) { mismatches++; report(`MISSING in DB: entity ${e.id}`); continue; }
 		compare('entity', e.id, 'name', e.name, r.name);
 		compare('entity', e.id, 'entityType', e.entityType, r.entity_type);
 		compare('entity', e.id, 'createdAt', e.createdAt, r.created_at);
@@ -618,7 +733,7 @@ function runVerify() {
 	const dbObs = new Map(vdb.prepare('SELECT * FROM entity_observations').all().map((r) => [r.id, r]));
 	for (const o of envelope.observations) {
 		const r = dbObs.get(o.id);
-		if (!r) { mismatches++; console.log(`MISSING in DB: observation ${o.id}`); continue; }
+		if (!r) { mismatches++; report(`MISSING in DB: observation ${o.id}`); continue; }
 		compare('observation', o.id, 'entityId', o.entityId, r.entity_id);
 		compare('observation', o.id, 'content', o.content, r.content);
 		compare('observation', o.id, 'source', o.source, r.source);
@@ -631,7 +746,7 @@ function runVerify() {
 	const dbRels = new Map(vdb.prepare('SELECT * FROM entity_relations').all().map((r) => [r.id, r]));
 	for (const rel of envelope.relations) {
 		const r = dbRels.get(rel.id);
-		if (!r) { mismatches++; console.log(`MISSING in DB: relation ${rel.id}`); continue; }
+		if (!r) { mismatches++; report(`MISSING in DB: relation ${rel.id}`); continue; }
 		compare('relation', rel.id, 'fromEntityId', rel.fromEntityId, r.from_entity_id);
 		compare('relation', rel.id, 'toEntityId', rel.toEntityId, r.to_entity_id);
 		compare('relation', rel.id, 'relationType', rel.relationType, r.relation_type);
@@ -640,7 +755,22 @@ function runVerify() {
 	}
 	vdb.close();
 	console.log(mismatches === 0 ? 'VERIFY: perfect round-trip, 0 mismatches.' : `VERIFY: ${mismatches} mismatches.`);
-	if (mismatches > 0) process.exitCode = 1;
+	if (mismatches > 0) {
+		process.exitCode = 1;
+		if (!fromEnvelope) {
+			const reportPath = join(mdDir, 'verify.log');
+			writeFileSync(reportPath, [
+				'# Verify report',
+				`# tree: ${mdDir}`,
+				`# target: ${targetDb}`,
+				`# ${mismatches} mismatch(es); exit code 1`,
+				'',
+				...reportLines,
+				'',
+			].join('\n'), 'utf8');
+			console.log(`  see ${reportPath}`);
+		}
+	}
 }
 if (verify && !apply) runVerify();
 
@@ -674,9 +804,19 @@ if (!apply) {
 		const dupes = items.filter((i) => existingIds[key].has(i.id)).length;
 		console.log(`  ${key}: ${items.length - dupes} would be added, ${dupes} already present (skipped)`);
 	}
+	if (doUpdate) {
+		console.log('');
+		if (!exists) {
+			console.log('  --update: target store does not exist, nothing to update.');
+		} else {
+			console.log(`  --update: ${updates.length} existing learning(s) would be updated`);
+			for (const u of updates) console.log(`    ${u.id}: ${Object.keys(u.set).join(', ')}`);
+			for (const w of updateWarnings) console.log(`    NOT UPDATABLE ${w}`);
+		}
+	}
 	console.log('');
 	if (exists && !merge) console.log('  NOTE: importing into this existing store requires --apply --merge.');
-	else if (merge) console.log('  NOTE: --merge alone is still a dry run; pass --apply --merge to import.');
+	else if (merge) console.log(`  NOTE: ${doUpdate ? '--update' : '--merge'} alone is still a dry run; pass --apply ${doUpdate ? '--update' : '--merge'} to import.`);
 	else console.log('  Pass --apply to perform the import.');
 	if (!existsSync(serverPath)) {
 		console.log(`  NOTE: no server at ${serverPath}; --apply would refuse. Run "npm run build" or pass --server <path>.`);
@@ -708,56 +848,94 @@ const p = spawn(process.execPath, [serverPath], {
 	stdio: ['pipe', 'pipe', 'pipe'],
 	env: { ...process.env, MEMORY_DB_PATH: targetDb },
 });
-let out = '';
 let err = '';
-p.stdout.on('data', (d) => (out += d));
 p.stderr.on('data', (d) => (err += d));
 
-const send = (msg) => p.stdin.write(JSON.stringify(msg) + '\n');
-send({
-	jsonrpc: '2.0',
-	id: 1,
-	method: 'initialize',
-	params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'import-md', version: '1' } },
+// Line-buffered JSON-RPC driver: requests resolve by id, so the import and
+// the sequential --update calls share one server session (one model load).
+let outBuf = '';
+const pending = new Map();
+p.stdout.on('data', (d) => {
+	outBuf += d;
+	let nl;
+	while ((nl = outBuf.indexOf('\n')) !== -1) {
+		const line = outBuf.slice(0, nl);
+		outBuf = outBuf.slice(nl + 1);
+		if (!line.trim().startsWith('{')) continue;
+		const msg = JSON.parse(line);
+		if (msg.id != null && pending.has(msg.id)) {
+			pending.get(msg.id)(msg);
+			pending.delete(msg.id);
+		}
+	}
 });
-send({ jsonrpc: '2.0', method: 'notifications/initialized' });
-send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'memory_import', arguments: { data: envelope } } });
+const send = (msg) => p.stdin.write(JSON.stringify(msg) + '\n');
+let rpcId = 0;
+const request = (method, params) =>
+	new Promise((resolve) => {
+		const id = ++rpcId;
+		pending.set(id, resolve);
+		send({ jsonrpc: '2.0', id, method, params });
+	});
 
 // Re-embedding hundreds of entries takes a while on first run (model
-// download + inference), hence the generous deadline.
-const deadline = setTimeout(() => finish('TIMEOUT after 10 minutes'), 600000);
-const poll = setInterval(() => {
-	if (out.split('\n').some((l) => l.includes('"id":2'))) finish();
-}, 1000);
+// download + inference), hence the generous deadline over the whole run.
+const deadline = setTimeout(() => {
+	p.kill();
+	console.error('TIMEOUT after 10 minutes');
+	console.error('STDERR tail:', err.split('\n').slice(-8).join('\n'));
+	process.exit(1);
+}, 600000);
 
-function finish(failNote) {
-	clearTimeout(deadline);
-	clearInterval(poll);
-	if (failNote) {
-		p.kill();
-		console.error(failNote);
-		console.error('STDERR tail:', err.split('\n').slice(-8).join('\n'));
-		process.exit(1);
-	}
-	// Post-steps only after the server has really exited: it may still hold
-	// the SQLite lock, and reading the store too early is a crash race.
-	const post = () => {
-		const reply = JSON.parse(out.split('\n').find((l) => l.includes('"id":2')));
+await request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'import-md', version: '1' } });
+send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+
+const importReply = await request('tools/call', { name: 'memory_import', arguments: { data: envelope } });
+console.log(importReply.result?.content?.[0]?.text ?? JSON.stringify(importReply));
+
+if (doUpdate) {
+	let updated = 0;
+	let failedCount = 0;
+	for (const u of updates) {
+		const reply = await request('tools/call', { name: 'memory_learn_update', arguments: { learningId: u.id, ...u.set } });
 		const text = reply.result?.content?.[0]?.text ?? JSON.stringify(reply);
-		console.log(text);
-		const embedWarns = err.split('\n').filter((l) => l.includes('embedding write skipped'));
-		if (embedWarns.length) console.log(`WARN: ${embedWarns.length} embeddings skipped (rows imported without vectors).`);
-		const v = schemaVersionOf(targetDb);
-		if (v !== EXPECTED_SCHEMA_VERSION) {
-			console.error(`WARNING: the server created schema_version ${v}, but this tree and script were written for ${EXPECTED_SCHEMA_VERSION}. Review the result before trusting it.`);
-			process.exitCode = 1;
+		let ok = false;
+		// The reply text is a ToolResult JSON; non-JSON text is an anticipated
+		// failure shape and stays ok=false, anything else propagates.
+		try {
+			ok = JSON.parse(text).success === true;
+		} catch (e) {
+			if (!(e instanceof SyntaxError)) throw e;
 		}
-		if (verify) runVerify();
-	};
-	if (p.exitCode !== null) {
-		post();
-	} else {
-		p.once('exit', post);
-		p.kill();
+		if (ok) {
+			updated++;
+			console.log(`updated ${u.id}: ${Object.keys(u.set).join(', ')}`);
+		} else {
+			failedCount++;
+			console.warn(`  UPDATE FAILED ${u.id}: ${text.slice(0, 200)}`);
+		}
 	}
+	console.log(`Updated ${updated} learning(s)${failedCount ? `, ${failedCount} FAILED` : ''}.`);
+	for (const w of updateWarnings) console.warn(`  NOT UPDATABLE ${w}`);
+	if (failedCount) process.exitCode = 1;
+}
+
+clearTimeout(deadline);
+// Post-steps only after the server has really exited: it may still hold
+// the SQLite lock, and reading the store too early is a crash race.
+const post = () => {
+	const embedWarns = err.split('\n').filter((l) => l.includes('embedding write skipped'));
+	if (embedWarns.length) console.log(`WARN: ${embedWarns.length} embeddings skipped (rows imported without vectors).`);
+	const v = schemaVersionOf(targetDb);
+	if (v !== EXPECTED_SCHEMA_VERSION) {
+		console.error(`WARNING: the server created schema_version ${v}, but this tree and script were written for ${EXPECTED_SCHEMA_VERSION}. Review the result before trusting it.`);
+		process.exitCode = 1;
+	}
+	if (verify) runVerify();
+};
+if (p.exitCode !== null) {
+	post();
+} else {
+	p.once('exit', post);
+	p.kill();
 }
