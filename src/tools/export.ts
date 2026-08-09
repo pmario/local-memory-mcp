@@ -272,7 +272,13 @@ function canonicaliseId(raw: string): string {
   if (UUID_RE.test(raw)) return raw.toLowerCase();
   const h = createHash('sha1');
   h.update(Buffer.from(ID_NAMESPACE_HEX, 'hex'));
-  h.update(raw, 'utf8');
+  // utf16le, NOT utf8. UTF-8 encoding replaces every unpaired surrogate
+  // (U+D800..U+DFFF) with U+FFFD, so the distinct ids "\uD800" and "\uD801" —
+  // both perfectly transportable in JSON — would hash identically and the
+  // second record would be discarded as a duplicate of the first. utf16le is
+  // lossless over the whole 16-bit range. Same reason secret comparison in this
+  // house uses utf16le.
+  h.update(Buffer.from(raw, 'utf16le'));
   const b = h.digest();
   b[6] = (b[6] & 0x0f) | 0x50; // version 5
   b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
@@ -305,7 +311,11 @@ const importSessionSchema = z.object({
   endedAt: zIsoish,
   project: zOptStr(200),
   summary: zOptStr(10000),
-  tasks: z.array(z.unknown()).max(1000).nullish(),
+  // sessionEndSchema declares `tasks: z.array(z.string())`, so unknown[] was
+  // looser than the tool that writes the column — and left each element
+  // unbounded, so one multi-megabyte task still produced an unbounded
+  // tasks_json write. Mirror the tool, and bound the element.
+  tasks: z.array(z.string().max(2000)).max(1000).nullish(),
 });
 
 const importEntitySchema = z.object({
@@ -500,16 +510,32 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
   // two hand-kept copies of the same rules (that copy is what drifted before
   // #29). Order matches the FK-safe insert order, so when two records claim one
   // id the one that would have been inserted first is the one that wins.
-  const seenIds = new Set<string>();
-  const dedupe = <T extends { id: string }>(r: T | null, kind: string): T | null =>
-    r && claimId(seenIds, r.id, kind) ? r : null;
+  // TWO claim spaces, drawn along where ids actually have to be unique.
+  //
+  // `embeddings.content_id` is one namespace shared by entities, observations,
+  // learnings and decisions — writeEmbeddingSync deletes by content_id alone,
+  // and backfillEntityEmbeddings keys entities there too. Those four therefore
+  // cannot hold the same id even though they live in different tables: one
+  // would overwrite the other's vector, and the in-memory vecMap has the same
+  // shape. They share a claim space.
+  //
+  // Sessions and relations carry no embedding, so their ids only have to be
+  // unique within their own table. Giving them their own space avoids
+  // discarding a legitimate legacy envelope that happens to number its
+  // sessions and its entities from the same sequence — exactly the hand-rolled
+  // shape this release is trying to keep importable.
+  const embeddableIds = new Set<string>();
+  const sessionIds = new Set<string>();
+  const relationIds = new Set<string>();
+  const dedupe = <T extends { id: string }>(seen: Set<string>, r: T | null, kind: string): T | null =>
+    r && claimId(seen, r.id, kind) ? r : null;
 
-  const validSessions = data.sessions.map((s) => dedupe(parseRecord(importSessionSchema, s, 'session'), 'session'));
-  const validEntities = data.entities.map((e) => dedupe(parseRecord(importEntitySchema, e, 'entity'), 'entity'));
-  const validObservations = data.observations.map((o) => dedupe(parseRecord(importObservationSchema, o, 'observation'), 'observation'));
-  const validRelations = data.relations.map((r) => dedupe(parseRecord(importRelationSchema, r, 'relation'), 'relation'));
-  const validLearnings = data.learnings.map((l) => dedupe(parseRecord(importLearningSchema, l, 'learning'), 'learning'));
-  const validDecisions = data.decisions.map((d) => dedupe(parseRecord(importDecisionSchema, d, 'decision'), 'decision'));
+  const validSessions = data.sessions.map((s) => dedupe(sessionIds, parseRecord(importSessionSchema, s, 'session'), 'session'));
+  const validEntities = data.entities.map((e) => dedupe(embeddableIds, parseRecord(importEntitySchema, e, 'entity'), 'entity'));
+  const validObservations = data.observations.map((o) => dedupe(embeddableIds, parseRecord(importObservationSchema, o, 'observation'), 'observation'));
+  const validRelations = data.relations.map((r) => dedupe(relationIds, parseRecord(importRelationSchema, r, 'relation'), 'relation'));
+  const validLearnings = data.learnings.map((l) => dedupe(embeddableIds, parseRecord(importLearningSchema, l, 'learning'), 'learning'));
+  const validDecisions = data.decisions.map((d) => dedupe(embeddableIds, parseRecord(importDecisionSchema, d, 'decision'), 'decision'));
 
   // Phase 1 (async, no lock): re-embed all content-bearing rows in parallel.
   // We key vectors by source id so the sync phase can attach them after a
@@ -582,8 +608,14 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       const ins = db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)');
       for (const [k, v] of Object.entries(env.profile as Record<string, unknown>)) {
         if (typeof v !== 'string' || v.length > MAX_META_VALUE) continue;
-        // Keys become `profile_<k>` meta rows; keep them short and inert.
-        if (!k || k.length > MAX_META_KEY || !/^[A-Za-z0-9_.-]+$/.test(k)) continue;
+        // Keys become `profile_<k>` meta rows. Bound the length and refuse
+        // control characters, but nothing stricter: profileSchema takes any
+        // string as `field`, so a user's own `profile({field: 'display name'})`
+        // is legitimate and a charset whitelist would drop it on re-import —
+        // the same silent-data-loss mistake the id rule was corrected for.
+        if (!k || k.length > MAX_META_KEY) continue;
+        // eslint-disable-next-line no-control-regex
+        if (/[\u0000-\u001f\u007f]/.test(k)) continue;
         const info = ins.run(`profile_${k}`, v);
         if (info.changes > 0) counts.profileFields++;
       }

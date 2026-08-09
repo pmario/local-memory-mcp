@@ -9,11 +9,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-// Hand-written import fixtures need real UUIDs since #29: memory_import rejects
-// any other id shape as malformed, so a fixture using 'e1' would be skipped for
-// the WRONG reason and the dangling-reference assertions below would pass
-// without ever reaching the code they exist to cover. Fixed values, not
-// randomUUID(), so a failure is reproducible.
+// Hand-written import fixtures use real UUIDs since #29. A non-UUID id is not
+// rejected — it is canonicalised — so a fixture written as 'e1' would still
+// import, but under a DERIVED id, and the dangling-reference assertions below
+// would then be measuring the mapping instead of the reference check they exist
+// to cover. Fixed values, not randomUUID(), so a failure is reproducible.
 const ID = {
   observation: '11111111-1111-4111-8111-111111111111',
   ghostEntity: '22222222-2222-4222-8222-222222222222',
@@ -348,6 +348,11 @@ describe('memory_import', () => {
     });
     const first = await memoryImport({ data: envelope });
     const second = await memoryImport({ data: envelope });
+    // Asserted OUTSIDE the guard on purpose: with only `if (first.success &&
+    // second.success)` a failing second import would skip both assertions while
+    // the row count still read 1, so the test would pass covering nothing.
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
     if (first.success && second.success) {
       expect((first.data as { imported: Record<string, number> }).imported.learnings).toBe(1);
       // Second run must dedupe against the first, not double-insert under a
@@ -422,19 +427,90 @@ describe('memory_import', () => {
       data: envelopeWith({
         profile: {
           name: 'Alice',
+          'display name': 'Alice M.', // legitimate: profileSchema takes any string as `field`
           huge: 'A'.repeat(20000), // over MAX_META_VALUE
-          'evil key': 'x', // key not [A-Za-z0-9_.-]
-          ['k'.repeat(200)]: 'x', // key over MAX_META_KEY
+          ['bad\u0000key']: 'x', // control character
+          ['k'.repeat(200)]: 'x', // over MAX_META_KEY
         },
         goal: 'B'.repeat(20000), // over MAX_META_VALUE
       }),
     });
     const keys = (getDb().prepare('SELECT key FROM meta').all() as Array<{ key: string }>).map((r) => r.key);
     expect(keys).toContain('profile_name');
+    // A space is not a reason to drop a user's own profile field — only length
+    // and control characters are. Rejecting it would repeat the silent-data-loss
+    // mistake the id rule was corrected for.
+    expect(keys).toContain('profile_display name');
     expect(keys).not.toContain('profile_huge');
-    expect(keys).not.toContain('profile_evil key');
+    expect(keys.some((k) => k.includes(' '))).toBe(false);
     expect(keys.some((k) => k.length > 120)).toBe(false);
     expect(keys).not.toContain('current_goal');
+  });
+
+  it('bounds an individual task, not just the number of them', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        sessions: [{ id: ID.observation, project: 'x', tasks: ['ok', 'A'.repeat(5000)] }],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.sessions).toBe(0);
+      expect(d.skipped.malformed).toBe(1);
+    }
+    const c = (getDb().prepare('SELECT COUNT(*) AS c FROM sessions').get() as { c: number }).c;
+    expect(c).toBe(0);
+  });
+
+  it('keeps a session id and an entity id independent of each other', async () => {
+    // Sessions and relations carry no embedding, so their ids only need to be
+    // unique within their own table. A legacy envelope numbering its sessions
+    // and its entities from the same sequence must not lose one of them.
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        sessions: [{ id: 'shared-1', project: 'x' }],
+        entities: [{ id: 'shared-1', name: 'Alice', entityType: 'person' }],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.sessions).toBe(1);
+      expect(d.imported.entities).toBe(1);
+      expect(d.skipped.malformed).toBe(0);
+    }
+    const db = getDb();
+    expect((db.prepare('SELECT COUNT(*) AS c FROM sessions').get() as { c: number }).c).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM entities').get() as { c: number }).c).toBe(1);
+  });
+
+  it('does not collapse two ids that differ only by an unpaired surrogate', async () => {
+    // UTF-8 maps every unpaired surrogate to U+FFFD, so hashing the raw id as
+    // utf8 would make "\uD800" and "\uD801" — both valid in JSON — collide, and
+    // the second record would be discarded as a duplicate of the first.
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        learnings: [
+          { id: '\uD800', category: 'pattern', content: 'first surrogate' },
+          { id: '\uD801', category: 'pattern', content: 'second surrogate' },
+        ],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.learnings).toBe(2);
+      expect(d.skipped.malformed).toBe(0);
+    }
+    const ids = (getDb().prepare('SELECT id FROM learnings').all() as Array<{ id: string }>).map((r) => r.id);
+    expect(new Set(ids).size).toBe(2);
   });
 
   it('rejects out-of-range and off-enum values a tool could never produce', async () => {
