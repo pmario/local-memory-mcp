@@ -28,7 +28,9 @@ import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
 // Analyst R1) — this alias prevents test churn for the rename.
 export { upsertEmbedding };
 
-const LEARNING_CATEGORIES: LearningCategory[] = [
+// Exported so memory_import can validate against the SAME set the interactive
+// tools enforce (#29) — one list, not a second copy that drifts.
+export const LEARNING_CATEGORIES: LearningCategory[] = [
   'pattern', 'mistake', 'insight', 'research', 'architecture',
   'infrastructure', 'tool', 'workflow', 'performance', 'security',
 ];

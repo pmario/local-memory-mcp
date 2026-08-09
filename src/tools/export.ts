@@ -30,8 +30,9 @@ import { z } from 'zod';
 import { getDb, nowIso } from '../db/client.js';
 import { prepareEmbeddingBatch, writeEmbeddingSync } from '../db/vector.js';
 import { decisionEmbeddingText } from './decide.js';
+import { LEARNING_CATEGORIES } from './learn.js';
 import { logger } from '../lib/logger.js';
-import type { ToolResult } from '../lib/types.js';
+import type { ToolResult, LearningCategory } from '../lib/types.js';
 
 const EXPORT_FORMAT = 'studiomeyer-memory-export';
 const EXPORT_VERSION = 1;
@@ -223,13 +224,154 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
 
 // ─── import ──────────────────────────────────────────
 
-// The envelope is validated structurally inside the handler rather than via a
+// The ENVELOPE is validated structurally inside the handler rather than via a
 // giant brittle Zod schema — this keeps us forgiving of envelopes produced by
 // the SaaS side or a future exporter version, while still rejecting garbage.
+// The RECORDS inside it are a different matter: until v2.4.3 they were guarded
+// by isStr()/asNum() only, which made import the one write path that bypassed
+// the constraints every interactive tool enforces (#29, reported by @pmario).
+// An envelope could therefore land rows no tool could create — open-string
+// category, confidence 999, 50k of content, and a non-UUID id.
 export const memoryImportSchema = z.object({
   data: z.record(z.unknown()),
   mode: z.enum(['merge']).optional(), // reserved; only additive merge is supported
 });
+
+// ─── per-record validation (#29) ─────────────────────
+//
+// Ids must be UUIDs, and that is a correctness requirement rather than
+// tidiness. An id is not confined to its row: it becomes the primary key in
+// the `embeddings` table, a key in the FTS index, and the key of the in-memory
+// vecMap below — which is only collision-free ACROSS TYPES because ids are
+// UUIDs (see the Phase-1 comment). It also reaches downstream filenames in
+// tooling built on top of an export, so `../x` is a traversal vector and not a
+// cosmetic defect. Rejecting a bad id is cheaper than sanitising it everywhere
+// it travels.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const zId = z.string().regex(UUID_RE, 'id must be a UUID');
+
+// Optional-with-default fields stay permissive about ABSENCE (an older or
+// leaner exporter may omit them) but strict about CONTENT: if a value is
+// present it has to satisfy the same bound the interactive tool applies.
+// `.nullable()` because JSON round-trips SQL NULLs as null, not undefined.
+const zOptStr = (max: number) => z.string().max(max).nullish();
+const zConfidence = z.number().min(0).max(1).nullish();
+const zCount = z.number().int().min(0).nullish();
+const zFlag = z.union([z.literal(0), z.literal(1), z.boolean()]).nullish();
+const zIsoish = z.string().max(64).nullish();
+const zTags = z.array(z.string().max(200)).max(100).nullish();
+
+// Bounds mirror learnSchema / decideSchema / entityCreateSchema /
+// entityObserveSchema / entityRelateSchema. Kept as separate shapes because the
+// import record is the persisted row (it carries id, timestamps and lifecycle
+// columns the create-time schemas have no reason to know about).
+const importSessionSchema = z.object({
+  id: zId,
+  startedAt: zIsoish,
+  endedAt: zIsoish,
+  project: zOptStr(200),
+  summary: zOptStr(10000),
+  tasks: z.array(z.unknown()).max(1000).nullish(),
+});
+
+const importEntitySchema = z.object({
+  id: zId,
+  name: z.string().min(1).max(200),
+  entityType: z.string().min(1).max(50),
+  createdAt: zIsoish,
+  updatedAt: zIsoish,
+  summary: zOptStr(2000),
+  confidence: zConfidence,
+});
+
+const importObservationSchema = z.object({
+  id: zId,
+  entityId: zId,
+  content: z.string().min(1).max(5000),
+  source: zOptStr(200),
+  sessionId: zId.nullish(),
+  validFrom: zIsoish,
+  validTo: zIsoish,
+  confidence: zConfidence,
+  createdAt: zIsoish,
+});
+
+const importRelationSchema = z.object({
+  id: zId,
+  fromEntityId: zId,
+  toEntityId: zId,
+  relationType: z.string().min(1).max(50),
+  weight: z.number().min(0).max(1).nullish(),
+  createdAt: zIsoish,
+});
+
+const importLearningSchema = z.object({
+  id: zId,
+  date: zIsoish,
+  category: z.enum(LEARNING_CATEGORIES as [LearningCategory, ...LearningCategory[]]),
+  content: z.string().min(1).max(10000),
+  project: zOptStr(200),
+  tags: zTags,
+  usageCount: zCount,
+  lastUsed: zIsoish,
+  confidence: zConfidence,
+  source: zOptStr(200),
+  verified: zFlag,
+  verifiedAt: zIsoish,
+  archived: zFlag,
+  archivedAt: zIsoish,
+  importance: z.number().min(0).max(1).nullish(),
+  lifecycleState: z.enum(['active', 'ephemeral', 'archived']).nullish(),
+  memoryType: z.enum(['episodic', 'semantic']).nullish(),
+});
+
+const importDecisionSchema = z.object({
+  id: zId,
+  date: zIsoish,
+  title: z.string().min(1).max(200),
+  decision: z.string().min(1).max(10000),
+  // reasoning is NOT NULL in the schema — a decision without it would insert ''
+  // and degrade the FTS body, so it is required here rather than defaulted (C1).
+  reasoning: z.string().min(1).max(10000),
+  alternatives: zOptStr(10000),
+  project: zOptStr(200),
+  tags: zTags,
+  confidence: zConfidence,
+  source: zOptStr(200),
+  verified: zFlag,
+  verifiedAt: zIsoish,
+});
+
+/**
+ * Validate one record, returning the parsed value or null.
+ *
+ * Unknown keys are stripped rather than rejected: a NEWER exporter adding a
+ * column must not make its envelopes unimportable by an older server. Bad
+ * VALUES are rejected; extra FIELDS are not. Failures are counted by the
+ * caller in `skipped.malformed`, so a single bad record never aborts the
+ * envelope and the import stays additive.
+ */
+function parseRecord<T extends z.ZodTypeAny>(
+  schema: T,
+  rec: Record<string, unknown>,
+  kind: string
+): z.infer<T> | null {
+  const res = schema.safeParse(rec);
+  if (res.success) return res.data;
+  const why = res.error.issues
+    .slice(0, 3)
+    .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+    .join('; ');
+  logger.warn(`[import] skipped malformed ${kind}: ${why}`);
+  return null;
+}
+
+/** SQLite has no boolean type — normalise 0/1/true/false to an integer flag. */
+function flagToInt(v: unknown, fallback: 0 | 1 = 0): 0 | 1 {
+  if (v === true || v === 1) return 1;
+  if (v === false || v === 0) return 0;
+  return fallback;
+}
 
 interface ImportArrays {
   learnings: Array<Record<string, unknown>>;
@@ -281,12 +423,20 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
   // also matches the embeddings table where content_id is the PK across types.
   // The embed-job filters MIRROR the Phase-2 insert guards exactly, so we never
   // spend inference on a row that will be skipped as malformed (R2 FINDING-B).
+  // Since #29 that mirror is literal: both phases parse with the same schema, so
+  // the two can no longer drift — and a 50k-character content field is rejected
+  // BEFORE it is embedded rather than after (the old guards embedded first and
+  // asked questions later).
+  const validLearnings = data.learnings.map((l) => parseRecord(importLearningSchema, l, 'learning'));
+  const validDecisions = data.decisions.map((d) => parseRecord(importDecisionSchema, d, 'decision'));
+  const validObservations = data.observations.map((o) => parseRecord(importObservationSchema, o, 'observation'));
+
   const embedJobs: Array<{ id: string; text: string }> = [];
-  for (const l of data.learnings) if (isStr(l.id) && isStr(l.category) && isStr(l.content)) embedJobs.push({ id: l.id, text: l.content });
+  for (const l of validLearnings) if (l) embedJobs.push({ id: l.id, text: l.content });
   // Decisions reuse the SAME embedding text as decide() (title+decision+
   // reasoning+alternatives) so a round-tripped decision keeps its native vector.
-  for (const d of data.decisions) if (isStr(d.id) && isStr(d.title) && isStr(d.decision) && isStr(d.reasoning)) embedJobs.push({ id: d.id, text: decisionEmbeddingText(d) });
-  for (const o of data.observations) if (isStr(o.id) && isStr(o.entityId) && isStr(o.content)) embedJobs.push({ id: o.id, text: o.content });
+  for (const d of validDecisions) if (d) embedJobs.push({ id: d.id, text: decisionEmbeddingText(d) });
+  for (const o of validObservations) if (o) embedJobs.push({ id: o.id, text: o.content });
   // One batched forward pass for the whole import (embedBatch), not N calls.
   const vecResults = await prepareEmbeddingBatch(embedJobs.map((j) => j.text));
   const vecMap = new Map<string, Float32Array | null>();
@@ -346,15 +496,16 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO sessions (id, started_at, ended_at, project, summary, tasks_json)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
-    for (const s of data.sessions) {
-      if (!isStr(s.id)) { skipped.malformed++; continue; }
+    for (const raw of data.sessions) {
+      const s = parseRecord(importSessionSchema, raw, 'session');
+      if (!s) { skipped.malformed++; continue; }
       const info = sIns.run(
         s.id,
-        str(s.startedAt) || nowIso(),
-        nullableStr(s.endedAt),
-        nullableStr(s.project),
-        nullableStr(s.summary),
-        JSON.stringify(asArray(s.tasks))
+        s.startedAt || nowIso(),
+        s.endedAt || null,
+        s.project || null,
+        s.summary || null,
+        JSON.stringify(s.tasks ?? [])
       );
       if (info.changes > 0) counts.sessions++;
     }
@@ -364,16 +515,17 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO entities (id, name, entity_type, created_at, updated_at, summary, confidence)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const e of data.entities) {
-      if (!isStr(e.id) || !isStr(e.name) || !isStr(e.entityType)) { skipped.malformed++; continue; }
+    for (const raw of data.entities) {
+      const e = parseRecord(importEntitySchema, raw, 'entity');
+      if (!e) { skipped.malformed++; continue; }
       const info = eIns.run(
         e.id,
         e.name,
         e.entityType,
-        str(e.createdAt) || nowIso(),
-        str(e.updatedAt) || nowIso(),
-        nullableStr(e.summary),
-        asNum(e.confidence, 0.7)
+        e.createdAt || nowIso(),
+        e.updatedAt || nowIso(),
+        e.summary || null,
+        e.confidence ?? 0.7
       );
       if (info.changes > 0) counts.entities++;
     }
@@ -385,20 +537,20 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
        (id, entity_id, content, source, session_id, valid_from, valid_to, confidence, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const o of data.observations) {
-      if (!isStr(o.id) || !isStr(o.entityId) || !isStr(o.content)) { skipped.malformed++; continue; }
+    for (const o of validObservations) {
+      if (!o) { skipped.malformed++; continue; }
       if (!entityExists.get(o.entityId)) { skipped.observationsMissingEntity++; continue; }
-      const sessId = isStr(o.sessionId) && sessionExists.get(o.sessionId) ? o.sessionId : null;
+      const sessId = o.sessionId && sessionExists.get(o.sessionId) ? o.sessionId : null;
       const info = oIns.run(
         o.id,
         o.entityId,
         o.content,
-        nullableStr(o.source),
+        o.source || null,
         sessId,
-        str(o.validFrom) || nowIso(),
-        nullableStr(o.validTo),
-        asNum(o.confidence, 0.7),
-        str(o.createdAt) || nowIso()
+        o.validFrom || nowIso(),
+        o.validTo || null,
+        o.confidence ?? 0.7,
+        o.createdAt || nowIso()
       );
       if (info.changes > 0) {
         counts.observations++;
@@ -411,11 +563,9 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO entity_relations (id, from_entity_id, to_entity_id, relation_type, weight, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
-    for (const rel of data.relations) {
-      if (!isStr(rel.id) || !isStr(rel.fromEntityId) || !isStr(rel.toEntityId) || !isStr(rel.relationType)) {
-        skipped.malformed++;
-        continue;
-      }
+    for (const raw of data.relations) {
+      const rel = parseRecord(importRelationSchema, raw, 'relation');
+      if (!rel) { skipped.malformed++; continue; }
       if (!entityExists.get(rel.fromEntityId) || !entityExists.get(rel.toEntityId)) {
         skipped.relationsMissingEndpoint++;
         continue;
@@ -425,8 +575,8 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
         rel.fromEntityId,
         rel.toEntityId,
         rel.relationType,
-        asNum(rel.weight, 1.0),
-        str(rel.createdAt) || nowIso()
+        rel.weight ?? 1.0,
+        rel.createdAt || nowIso()
       );
       if (info.changes > 0) counts.relations++;
     }
@@ -439,26 +589,26 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
         importance, lifecycle_state, memory_type)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const l of data.learnings) {
-      if (!isStr(l.id) || !isStr(l.category) || !isStr(l.content)) { skipped.malformed++; continue; }
+    for (const l of validLearnings) {
+      if (!l) { skipped.malformed++; continue; }
       const info = lIns.run(
         l.id,
-        str(l.date) || nowIso(),
+        l.date || nowIso(),
         l.category,
         l.content,
-        nullableStr(l.project),
-        JSON.stringify(asArray(l.tags)),
-        asNum(l.usageCount, 0),
-        nullableStr(l.lastUsed),
-        asNum(l.confidence, 0.7),
-        nullableStr(l.source),
-        asNum(l.verified, 0),
-        nullableStr(l.verifiedAt),
-        asNum(l.archived, 0),
-        nullableStr(l.archivedAt),
-        l.importance === null || l.importance === undefined ? null : asNum(l.importance, 0),
-        str(l.lifecycleState) || 'active',
-        str(l.memoryType) || 'semantic'
+        l.project || null,
+        JSON.stringify(l.tags ?? []),
+        l.usageCount ?? 0,
+        l.lastUsed || null,
+        l.confidence ?? 0.7,
+        l.source || null,
+        flagToInt(l.verified),
+        l.verifiedAt || null,
+        flagToInt(l.archived),
+        l.archivedAt || null,
+        l.importance ?? null,
+        l.lifecycleState || 'active',
+        l.memoryType || 'semantic'
       );
       if (info.changes > 0) {
         counts.learnings++;
@@ -473,23 +623,23 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
         confidence, source, verified, verified_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const d of data.decisions) {
+    for (const d of validDecisions) {
       // reasoning is NOT NULL in the schema — a decision without it is malformed
       // (would insert '' and degrade the FTS body). Skip rather than corrupt. C1.
-      if (!isStr(d.id) || !isStr(d.title) || !isStr(d.decision) || !isStr(d.reasoning)) { skipped.malformed++; continue; }
+      if (!d) { skipped.malformed++; continue; }
       const info = dIns.run(
         d.id,
-        str(d.date) || nowIso(),
+        d.date || nowIso(),
         d.title,
         d.decision,
-        nullableStr(d.alternatives),
-        str(d.reasoning),
-        nullableStr(d.project),
-        JSON.stringify(asArray(d.tags)),
-        asNum(d.confidence, 0.7),
-        nullableStr(d.source),
-        asNum(d.verified, 0),
-        nullableStr(d.verifiedAt)
+        d.alternatives || null,
+        d.reasoning,
+        d.project || null,
+        JSON.stringify(d.tags ?? []),
+        d.confidence ?? 0.7,
+        d.source || null,
+        flagToInt(d.verified),
+        d.verifiedAt || null
       );
       if (info.changes > 0) {
         counts.decisions++;
@@ -526,15 +676,6 @@ function safeJsonArray(v: unknown): unknown[] {
 function isStr(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : '';
-}
-function nullableStr(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null;
-}
-function asArray(v: unknown): unknown[] {
-  return Array.isArray(v) ? v : [];
-}
-function asNum(v: unknown, fallback: number): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
-}
+// str/nullableStr/asArray/asNum were the record guards before #29. The zod
+// shapes above replaced them; only isStr survives, for the envelope-level
+// `goal` field which is a plain string and not a record.

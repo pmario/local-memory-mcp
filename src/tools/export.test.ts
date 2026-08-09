@@ -9,6 +9,20 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+// Hand-written import fixtures need real UUIDs since #29: memory_import rejects
+// any other id shape as malformed, so a fixture using 'e1' would be skipped for
+// the WRONG reason and the dangling-reference assertions below would pass
+// without ever reaching the code they exist to cover. Fixed values, not
+// randomUUID(), so a failure is reproducible.
+const ID = {
+  observation: '11111111-1111-4111-8111-111111111111',
+  ghostEntity: '22222222-2222-4222-8222-222222222222',
+  entity: '33333333-3333-4333-8333-333333333333',
+  relation: '44444444-4444-4444-8444-444444444444',
+  missingEntity: '55555555-5555-4555-8555-555555555555',
+  decision: '66666666-6666-4666-8666-666666666666',
+};
+
 let tmp = '';
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'local-memory-export-'));
@@ -161,7 +175,7 @@ describe('memory_import', () => {
       format: 'studiomeyer-memory-export',
       version: 1,
       entities: [],
-      observations: [{ id: 'o1', entityId: 'ghost-entity', content: 'orphan fact' }],
+      observations: [{ id: ID.observation, entityId: ID.ghostEntity, content: 'orphan fact' }],
       relations: [],
       learnings: [],
       decisions: [],
@@ -184,9 +198,11 @@ describe('memory_import', () => {
     const envelope = {
       format: 'studiomeyer-memory-export',
       version: 1,
-      entities: [{ id: 'e1', name: 'Solo', entityType: 'person' }],
+      entities: [{ id: ID.entity, name: 'Solo', entityType: 'person' }],
       observations: [],
-      relations: [{ id: 'r1', fromEntityId: 'e1', toEntityId: 'missing', relationType: 'knows' }],
+      relations: [
+        { id: ID.relation, fromEntityId: ID.entity, toEntityId: ID.missingEntity, relationType: 'knows' },
+      ],
       learnings: [],
       decisions: [],
       sessions: [],
@@ -233,7 +249,7 @@ describe('memory_import', () => {
       relations: [],
       sessions: [],
       learnings: [],
-      decisions: [{ id: 'd1', title: 'No reasoning', decision: 'do X' }], // reasoning omitted
+      decisions: [{ id: ID.decision, title: 'No reasoning', decision: 'do X' }], // reasoning omitted
     };
     const imp = await memoryImport({ data: envelope });
     expect(imp.success).toBe(true);
@@ -242,6 +258,222 @@ describe('memory_import', () => {
       expect(d.imported.decisions).toBe(0);
       expect(d.skipped.malformed).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  // ─── #29: import must enforce the same constraints as every other write ───
+  //
+  // Reported by @pmario with a runnable repro. Before v2.4.3 memory_import
+  // guarded records with isStr()/asNum() only, so an envelope could write rows
+  // no interactive tool could produce. Each test below fails if the zod shapes
+  // in export.ts are weakened back toward the old guards.
+
+  const envelopeWith = (over: Record<string, unknown>) => ({
+    format: 'studiomeyer-memory-export',
+    version: 1,
+    entities: [],
+    observations: [],
+    relations: [],
+    sessions: [],
+    learnings: [],
+    decisions: [],
+    ...over,
+  });
+
+  it('rejects the exact #29 repro record and writes nothing', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        learnings: [
+          {
+            id: '../x',
+            category: 'nope',
+            content: 'A'.repeat(50000),
+            confidence: 999,
+            memoryType: 'bogus',
+          },
+        ],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.learnings).toBe(0);
+      expect(d.skipped.malformed).toBe(1);
+    }
+    // The row must be absent from the table, not merely uncounted.
+    const row = getDb().prepare('SELECT COUNT(*) AS c FROM learnings').get() as { c: number };
+    expect(row.c).toBe(0);
+  });
+
+  it('rejects a traversal-shaped id even when every other field is valid', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    for (const badId of ['../x', 'o1', '', 'a/b', '..\\win', 'ghost-entity']) {
+      const imp = await memoryImport({
+        data: envelopeWith({
+          learnings: [{ id: badId, category: 'pattern', content: 'perfectly fine content' }],
+        }),
+      });
+      if (imp.success) {
+        const d = imp.data as { imported: Record<string, number> };
+        expect(d.imported.learnings, `id ${JSON.stringify(badId)} must be rejected`).toBe(0);
+      }
+    }
+    const row = getDb().prepare('SELECT COUNT(*) AS c FROM learnings').get() as { c: number };
+    expect(row.c).toBe(0);
+  });
+
+  it('rejects out-of-range and off-enum values a tool could never produce', async () => {
+    const { memoryImport } = await import('./export.js');
+    const valid = { id: ID.decision, category: 'pattern', content: 'ok' };
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['category off enum', { ...valid, category: 'nope' }],
+      ['confidence above 1', { ...valid, confidence: 999 }],
+      ['confidence below 0', { ...valid, confidence: -0.5 }],
+      ['content over the 10k cap', { ...valid, content: 'A'.repeat(10001) }],
+      ['content empty', { ...valid, content: '' }],
+      ['memoryType off enum', { ...valid, memoryType: 'bogus' }],
+      ['lifecycleState off enum', { ...valid, lifecycleState: 'zombie' }],
+      ['usageCount negative', { ...valid, usageCount: -1 }],
+    ];
+    for (const [label, learning] of cases) {
+      const imp = await memoryImport({ data: envelopeWith({ learnings: [learning] }) });
+      if (imp.success) {
+        const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+        expect(d.imported.learnings, label).toBe(0);
+        expect(d.skipped.malformed, label).toBe(1);
+      }
+    }
+  });
+
+  it('stays additive: one malformed record does not drop the valid ones', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        learnings: [
+          { id: ID.observation, category: 'pattern', content: 'first good one' },
+          { id: '../evil', category: 'nope', content: 'bad' },
+          { id: ID.entity, category: 'insight', content: 'second good one' },
+        ],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.learnings).toBe(2);
+      expect(d.skipped.malformed).toBe(1);
+    }
+    const ids = (getDb().prepare('SELECT id FROM learnings ORDER BY id').all() as Array<{ id: string }>)
+      .map((r) => r.id);
+    expect(ids).toEqual([ID.observation, ID.entity].sort());
+  });
+
+  it('does not embed a record it is going to skip', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const { isVectorEnabled } = await import('../db/vector.js');
+    if (!isVectorEnabled()) return;
+    await memoryImport({
+      data: envelopeWith({
+        learnings: [{ id: '../x', category: 'nope', content: 'A'.repeat(50000), confidence: 999 }],
+      }),
+    });
+    // The old guards embedded first and skipped afterwards, so a 50k field was
+    // paid for in inference before being thrown away.
+    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c;
+    expect(count).toBe(0);
+  });
+
+  it('accepts a valid record and keeps unknown fields from breaking the import', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        learnings: [
+          {
+            id: ID.observation,
+            category: 'security',
+            content: 'validated on the way in',
+            confidence: 0.9,
+            memoryType: 'semantic',
+            lifecycleState: 'active',
+            tags: ['import', 'zod'],
+            verified: true,
+            // A newer exporter adding a column must not make its envelopes
+            // unimportable by an older server: unknown keys are stripped,
+            // not rejected.
+            somethingFromTheFuture: { nested: true },
+          },
+        ],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.learnings).toBe(1);
+      expect(d.skipped.malformed).toBe(0);
+    }
+    const row = getDb()
+      .prepare('SELECT id, category, confidence, verified, memory_type FROM learnings')
+      .get() as { id: string; category: string; confidence: number; verified: number; memory_type: string };
+    expect(row.id).toBe(ID.observation);
+    expect(row.category).toBe('security');
+    expect(row.confidence).toBe(0.9);
+    expect(row.verified).toBe(1); // boolean true normalised to the SQLite flag
+    expect(row.memory_type).toBe('semantic');
+  });
+
+  it('applies the same id rule to entities, observations, relations and sessions', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        sessions: [{ id: 's1', project: 'x' }],
+        entities: [{ id: '../e', name: 'Evil', entityType: 'person' }],
+        observations: [{ id: 'o1', entityId: ID.entity, content: 'orphan' }],
+        relations: [
+          { id: 'r1', fromEntityId: ID.entity, toEntityId: ID.missingEntity, relationType: 'knows' },
+        ],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.sessions).toBe(0);
+      expect(d.imported.entities).toBe(0);
+      expect(d.imported.observations).toBe(0);
+      expect(d.imported.relations).toBe(0);
+      expect(d.skipped.malformed).toBe(4);
+    }
+    for (const t of ['sessions', 'entities', 'entity_observations', 'entity_relations']) {
+      const c = (getDb().prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c;
+      expect(c, t).toBe(0);
+    }
+  });
+
+  it('still round-trips a real export after the tightening', async () => {
+    const { memoryExport, memoryImport } = await import('./export.js');
+    const { closeDb, getDb } = await import('../db/client.js');
+    await seed();
+    const exp = memoryExport({});
+    if (!exp.success) throw new Error('export failed');
+
+    closeDb();
+    process.env.MEMORY_DB_PATH = join(tmp, 'tightened.sqlite');
+    const imp = await memoryImport({ data: exp.data as Record<string, unknown> });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { skipped: Record<string, number> };
+      // The guarantee that matters: our OWN exporter produces envelopes that
+      // survive the stricter import untouched.
+      expect(d.skipped.malformed).toBe(0);
+    }
+    const db = getDb();
+    expect((db.prepare('SELECT COUNT(*) AS c FROM learnings').get() as { c: number }).c).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM entities').get() as { c: number }).c).toBe(2);
+    expect((db.prepare('SELECT COUNT(*) AS c FROM entity_relations').get() as { c: number }).c).toBe(1);
   });
 
   it('re-derives embeddings on import when vec is enabled', async () => {
