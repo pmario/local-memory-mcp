@@ -27,6 +27,7 @@
  *     absent, is skipped and counted rather than throwing.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { getDb, nowIso } from '../db/client.js';
 import { prepareEmbeddingBatch, writeEmbeddingSync } from '../db/vector.js';
 import { decisionEmbeddingText } from './decide.js';
@@ -239,16 +240,49 @@ export const memoryImportSchema = z.object({
 
 // ─── per-record validation (#29) ─────────────────────
 //
-// Ids must be UUIDs, and that is a correctness requirement rather than
-// tidiness. An id is not confined to its row: it becomes the primary key in
-// the `embeddings` table, a key in the FTS index, and the key of the in-memory
-// vecMap below — which is only collision-free ACROSS TYPES because ids are
-// UUIDs (see the Phase-1 comment). It also reaches downstream filenames in
-// tooling built on top of an export, so `../x` is a traversal vector and not a
-// cosmetic defect. Rejecting a bad id is cheaper than sanitising it everywhere
-// it travels.
+// Ids must be UUIDs by the time they touch the database, and that is a
+// correctness requirement rather than tidiness. An id is not confined to its
+// row: it becomes the primary key in the `embeddings` table, a key in the FTS
+// index, and the key of the in-memory vecMap below — which is only
+// collision-free ACROSS TYPES because ids are UUIDs (see the Phase-1 comment).
+// It also reaches downstream filenames in tooling built on top of an export,
+// so `../x` is a traversal vector and not a cosmetic defect.
+//
+// We CANONICALISE rather than reject. Rejecting looks safer and is worse:
+// until v2.4.2 the import accepted any string as an id, so anyone who fed this
+// server through a hand-rolled importer has non-UUID rows sitting in their
+// database right now. Their next memory_export carries those ids, and a strict
+// import would silently drop exactly the rows a restore exists to save. Losing
+// a user's data to protect them from their own backup is not a trade we make.
+//
+// So a non-UUID id is mapped to an RFC 4122 §4.3 name-based (v5) UUID derived
+// from it. Two properties make that safe rather than merely convenient:
+// deterministic, so re-importing the same envelope is still idempotent and
+// INSERT OR IGNORE still dedupes; and pure, so a foreign key ('entityId',
+// 'fromEntityId', …) maps to the same value as the id it points at without any
+// bookkeeping. Ids that are already UUIDs pass through untouched (lower-cased),
+// so a normal export round-trips byte-for-byte.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const zId = z.string().regex(UUID_RE, 'id must be a UUID');
+
+// A fixed namespace, so the mapping is stable across machines and versions.
+// Changing this constant would re-key every legacy id — treat it as frozen.
+const ID_NAMESPACE_HEX = '9f3a1c52e4b74d6b8a1e05c3d7f24b90';
+
+function canonicaliseId(raw: string): string {
+  if (UUID_RE.test(raw)) return raw.toLowerCase();
+  const h = createHash('sha1');
+  h.update(Buffer.from(ID_NAMESPACE_HEX, 'hex'));
+  h.update(raw, 'utf8');
+  const b = h.digest();
+  b[6] = (b[6] & 0x0f) | 0x50; // version 5
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const x = b.subarray(0, 16).toString('hex');
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
+}
+
+// The bound matters independently of the shape: it caps the work done before
+// canonicalisation, and no legitimate id is anywhere near it.
+const zId = z.string().min(1).max(200).transform(canonicaliseId);
 
 // Optional-with-default fields stay permissive about ABSENCE (an older or
 // leaner exporter may omit them) but strict about CONTENT: if a value is
@@ -373,6 +407,37 @@ function flagToInt(v: unknown, fallback: 0 | 1 = 0): 0 | 1 {
   return fallback;
 }
 
+/**
+ * Reject a record whose id has already been claimed in this envelope.
+ *
+ * Valid UUID SYNTAX is not UNIQUENESS. The Phase-1 comment leans on ids being
+ * collision-free across record types to justify a single id-keyed vecMap, and
+ * a hand-built envelope can repeat one — within a type or across two. The
+ * INSERT OR IGNORE would quietly drop the second row while the vecMap had
+ * already handed its embedding to the first, attaching one record's vector to
+ * another record's text. Cheap to close, so we close it: first occurrence
+ * wins, every later one is malformed.
+ *
+ * The set spans ALL types on purpose, because the vecMap does too.
+ */
+function claimId(seen: Set<string>, id: string, kind: string): boolean {
+  if (seen.has(id)) {
+    logger.warn(`[import] skipped ${kind}: id ${id} appears more than once in this envelope`);
+    return false;
+  }
+  seen.add(id);
+  return true;
+}
+
+// Envelope-level caps. The record shapes bound each row, but nothing bounded
+// the envelope itself: `profile` values and `goal` went into the meta table
+// with no length check at all, and the arrays had no element ceiling. None of
+// this is reachable by an exporter of ours — it is the hand-built-envelope
+// case, which is the whole reason #29 existed.
+const MAX_ARRAY_ITEMS = 100_000;
+const MAX_META_VALUE = 10_000;
+const MAX_META_KEY = 100;
+
 interface ImportArrays {
   learnings: Array<Record<string, unknown>>;
   decisions: Array<Record<string, unknown>>;
@@ -404,8 +469,20 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
     };
   }
 
-  const arr = (k: string): Array<Record<string, unknown>> =>
-    Array.isArray(env[k]) ? (env[k] as Array<Record<string, unknown>>) : [];
+  // Slicing rather than refusing keeps the import additive: an oversized
+  // envelope still lands what it can instead of failing whole. The overflow is
+  // reported through skipped.malformed like any other unusable record.
+  let overLimit = 0;
+  const arr = (k: string): Array<Record<string, unknown>> => {
+    if (!Array.isArray(env[k])) return [];
+    const a = env[k] as Array<Record<string, unknown>>;
+    if (a.length > MAX_ARRAY_ITEMS) {
+      overLimit += a.length - MAX_ARRAY_ITEMS;
+      logger.warn(`[import] ${k}: ${a.length} items exceeds the ${MAX_ARRAY_ITEMS} cap — truncating`);
+      return a.slice(0, MAX_ARRAY_ITEMS);
+    }
+    return a;
+  };
   const data: ImportArrays = {
     learnings: arr('learnings'),
     decisions: arr('decisions'),
@@ -415,22 +492,39 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
     sessions: arr('sessions'),
   };
 
+  // Phase 0 (sync, cheap): parse every record ONCE, up front.
+  //
+  // All six types are parsed here rather than inline at insert time so that the
+  // id-uniqueness check below can span the whole envelope, and so the embed
+  // phase and the insert phase work from literally the same objects instead of
+  // two hand-kept copies of the same rules (that copy is what drifted before
+  // #29). Order matches the FK-safe insert order, so when two records claim one
+  // id the one that would have been inserted first is the one that wins.
+  const seenIds = new Set<string>();
+  const dedupe = <T extends { id: string }>(r: T | null, kind: string): T | null =>
+    r && claimId(seenIds, r.id, kind) ? r : null;
+
+  const validSessions = data.sessions.map((s) => dedupe(parseRecord(importSessionSchema, s, 'session'), 'session'));
+  const validEntities = data.entities.map((e) => dedupe(parseRecord(importEntitySchema, e, 'entity'), 'entity'));
+  const validObservations = data.observations.map((o) => dedupe(parseRecord(importObservationSchema, o, 'observation'), 'observation'));
+  const validRelations = data.relations.map((r) => dedupe(parseRecord(importRelationSchema, r, 'relation'), 'relation'));
+  const validLearnings = data.learnings.map((l) => dedupe(parseRecord(importLearningSchema, l, 'learning'), 'learning'));
+  const validDecisions = data.decisions.map((d) => dedupe(parseRecord(importDecisionSchema, d, 'decision'), 'decision'));
+
   // Phase 1 (async, no lock): re-embed all content-bearing rows in parallel.
   // We key vectors by source id so the sync phase can attach them after a
   // successful insert. Rows whose embedding fails (vec disabled / transient)
   // simply land without a vector — FTS5 still indexes them via the triggers.
-  // ids are UUIDs so a single id-keyed map can't collide across types; this
-  // also matches the embeddings table where content_id is the PK across types.
-  // The embed-job filters MIRROR the Phase-2 insert guards exactly, so we never
-  // spend inference on a row that will be skipped as malformed (R2 FINDING-B).
-  // Since #29 that mirror is literal: both phases parse with the same schema, so
-  // the two can no longer drift — and a 50k-character content field is rejected
-  // BEFORE it is embedded rather than after (the old guards embedded first and
-  // asked questions later).
-  const validLearnings = data.learnings.map((l) => parseRecord(importLearningSchema, l, 'learning'));
-  const validDecisions = data.decisions.map((d) => parseRecord(importDecisionSchema, d, 'decision'));
-  const validObservations = data.observations.map((o) => parseRecord(importObservationSchema, o, 'observation'));
-
+  // A single id-keyed map is safe across types because every id is a UUID by
+  // this point AND has been claimed exactly once above; this also matches the
+  // embeddings table, where content_id is the PK across types.
+  //
+  // HONEST LIMIT: schema validity is now shared between the phases and cannot
+  // drift. Referential eligibility is NOT — an observation whose entity is
+  // missing, or a row that INSERT OR IGNORE drops as a duplicate, is embedded
+  // before we can know that. Both need the transaction to decide, and paying
+  // for a wasted embedding is cheaper than holding the write lock across an
+  // inference pass. The vectors are simply never attached.
   const embedJobs: Array<{ id: string; text: string }> = [];
   for (const l of validLearnings) if (l) embedJobs.push({ id: l.id, text: l.content });
   // Decisions reuse the SAME embedding text as decide() (title+decision+
@@ -468,7 +562,10 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
   const skipped = {
     observationsMissingEntity: 0,
     relationsMissingEndpoint: 0,
-    malformed: 0,
+    // Records dropped by the per-array cap never reached a schema, so they are
+    // counted here rather than being invisible. Silent truncation would read as
+    // "imported everything" when it did not.
+    malformed: overLimit,
   };
 
   // Phase 2 (sync, single transaction): FK-safe insert order. Either the whole
@@ -478,16 +575,20 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
 
   const tx = db.transaction(() => {
     // Profile + goal — additive only (never clobber an existing local profile).
-    if (env.profile && typeof env.profile === 'object') {
+    // Bounded since #29-followup: these were the last two writes reaching the
+    // DB with no length check, and `profile` also took its KEY straight from
+    // the envelope. Non-array/plain-object check first — `typeof [] === 'object'`.
+    if (env.profile && typeof env.profile === 'object' && !Array.isArray(env.profile)) {
       const ins = db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)');
       for (const [k, v] of Object.entries(env.profile as Record<string, unknown>)) {
-        if (typeof v === 'string') {
-          const info = ins.run(`profile_${k}`, v);
-          if (info.changes > 0) counts.profileFields++;
-        }
+        if (typeof v !== 'string' || v.length > MAX_META_VALUE) continue;
+        // Keys become `profile_<k>` meta rows; keep them short and inert.
+        if (!k || k.length > MAX_META_KEY || !/^[A-Za-z0-9_.-]+$/.test(k)) continue;
+        const info = ins.run(`profile_${k}`, v);
+        if (info.changes > 0) counts.profileFields++;
       }
     }
-    if (isStr(env.goal)) {
+    if (isStr(env.goal) && env.goal.length <= MAX_META_VALUE) {
       db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run('current_goal', env.goal);
     }
 
@@ -496,8 +597,7 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO sessions (id, started_at, ended_at, project, summary, tasks_json)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
-    for (const raw of data.sessions) {
-      const s = parseRecord(importSessionSchema, raw, 'session');
+    for (const s of validSessions) {
       if (!s) { skipped.malformed++; continue; }
       const info = sIns.run(
         s.id,
@@ -515,8 +615,7 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO entities (id, name, entity_type, created_at, updated_at, summary, confidence)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
-    for (const raw of data.entities) {
-      const e = parseRecord(importEntitySchema, raw, 'entity');
+    for (const e of validEntities) {
       if (!e) { skipped.malformed++; continue; }
       const info = eIns.run(
         e.id,
@@ -563,8 +662,7 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO entity_relations (id, from_entity_id, to_entity_id, relation_type, weight, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
-    for (const raw of data.relations) {
-      const rel = parseRecord(importRelationSchema, raw, 'relation');
+    for (const rel of validRelations) {
       if (!rel) { skipped.malformed++; continue; }
       if (!entityExists.get(rel.fromEntityId) || !entityExists.get(rel.toEntityId)) {
         skipped.relationsMissingEndpoint++;

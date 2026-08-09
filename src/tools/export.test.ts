@@ -306,22 +306,135 @@ describe('memory_import', () => {
     expect(row.c).toBe(0);
   });
 
-  it('rejects a traversal-shaped id even when every other field is valid', async () => {
+  it('canonicalises a traversal-shaped id instead of storing it', async () => {
+    // The guarantee is NOT "the record is rejected" — rejecting a legacy id
+    // would silently drop rows from a restore. It is "no id that is not a UUID
+    // ever reaches the database", which closes the traversal path while
+    // keeping the import lossless.
     const { memoryImport } = await import('./export.js');
     const { getDb } = await import('../db/client.js');
-    for (const badId of ['../x', 'o1', '', 'a/b', '..\\win', 'ghost-entity']) {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    const nasty = ['../x', 'o1', 'a/b', '..\\win', 'ghost-entity', '../../etc/passwd', 'a b'];
+    for (const badId of nasty) {
       const imp = await memoryImport({
         data: envelopeWith({
-          learnings: [{ id: badId, category: 'pattern', content: 'perfectly fine content' }],
+          learnings: [{ id: badId, category: 'pattern', content: `content for ${badId}` }],
         }),
       });
       if (imp.success) {
         const d = imp.data as { imported: Record<string, number> };
-        expect(d.imported.learnings, `id ${JSON.stringify(badId)} must be rejected`).toBe(0);
+        expect(d.imported.learnings, `id ${JSON.stringify(badId)} should still import`).toBe(1);
       }
     }
-    const row = getDb().prepare('SELECT COUNT(*) AS c FROM learnings').get() as { c: number };
-    expect(row.c).toBe(0);
+    const ids = (getDb().prepare('SELECT id FROM learnings').all() as Array<{ id: string }>).map((r) => r.id);
+    expect(ids).toHaveLength(nasty.length);
+    for (const id of ids) expect(id, `stored id ${id}`).toMatch(uuid);
+    // An empty id is still malformed — there is nothing to canonicalise.
+    const empty = await memoryImport({
+      data: envelopeWith({ learnings: [{ id: '', category: 'pattern', content: 'x' }] }),
+    });
+    if (empty.success) {
+      const d = empty.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.learnings).toBe(0);
+      expect(d.skipped.malformed).toBe(1);
+    }
+  });
+
+  it('maps a legacy id deterministically, so re-import stays idempotent', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const envelope = envelopeWith({
+      learnings: [{ id: 'legacy-1', category: 'pattern', content: 'written by a hand-rolled importer' }],
+    });
+    const first = await memoryImport({ data: envelope });
+    const second = await memoryImport({ data: envelope });
+    if (first.success && second.success) {
+      expect((first.data as { imported: Record<string, number> }).imported.learnings).toBe(1);
+      // Second run must dedupe against the first, not double-insert under a
+      // different derived id — that is what makes the mapping safe.
+      expect((second.data as { imported: Record<string, number> }).imported.learnings).toBe(0);
+    }
+    const rows = getDb().prepare('SELECT COUNT(*) AS c FROM learnings').get() as { c: number };
+    expect(rows.c).toBe(1);
+  });
+
+  it('keeps foreign keys pointing at their record after canonicalisation', async () => {
+    // A relation referencing legacy entity ids must still resolve: the mapping
+    // is pure, so 'e-1' derives the same UUID whether it appears as an id or
+    // as a foreign key. If that broke, the endpoints would look missing.
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        entities: [
+          { id: 'e-1', name: 'Alice', entityType: 'person' },
+          { id: 'e-2', name: 'Acme', entityType: 'company' },
+        ],
+        observations: [{ id: 'o-1', entityId: 'e-1', content: 'works at Acme' }],
+        relations: [{ id: 'r-1', fromEntityId: 'e-1', toEntityId: 'e-2', relationType: 'works_at' }],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.entities).toBe(2);
+      expect(d.imported.observations).toBe(1);
+      expect(d.imported.relations).toBe(1);
+      expect(d.skipped.observationsMissingEntity).toBe(0);
+      expect(d.skipped.relationsMissingEndpoint).toBe(0);
+    }
+    const joined = getDb()
+      .prepare(
+        `SELECT e.name FROM entity_relations r
+         JOIN entities e ON e.id = r.from_entity_id`
+      )
+      .get() as { name: string };
+    expect(joined.name).toBe('Alice');
+  });
+
+  it('drops a duplicate id within one envelope instead of crossing the wires', async () => {
+    // Valid UUID syntax is not uniqueness. Two records sharing an id would
+    // collide in the id-keyed vecMap and one could receive the other's vector.
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        learnings: [
+          { id: ID.observation, category: 'pattern', content: 'the first claimant' },
+          { id: ID.observation, category: 'insight', content: 'the impostor' },
+        ],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.learnings).toBe(1);
+      expect(d.skipped.malformed).toBe(1);
+    }
+    const row = getDb().prepare('SELECT content FROM learnings').get() as { content: string };
+    expect(row.content).toBe('the first claimant'); // first wins
+  });
+
+  it('bounds the meta writes that had no length check at all', async () => {
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    await memoryImport({
+      data: envelopeWith({
+        profile: {
+          name: 'Alice',
+          huge: 'A'.repeat(20000), // over MAX_META_VALUE
+          'evil key': 'x', // key not [A-Za-z0-9_.-]
+          ['k'.repeat(200)]: 'x', // key over MAX_META_KEY
+        },
+        goal: 'B'.repeat(20000), // over MAX_META_VALUE
+      }),
+    });
+    const keys = (getDb().prepare('SELECT key FROM meta').all() as Array<{ key: string }>).map((r) => r.key);
+    expect(keys).toContain('profile_name');
+    expect(keys).not.toContain('profile_huge');
+    expect(keys).not.toContain('profile_evil key');
+    expect(keys.some((k) => k.length > 120)).toBe(false);
+    expect(keys).not.toContain('current_goal');
   });
 
   it('rejects out-of-range and off-enum values a tool could never produce', async () => {
@@ -426,13 +539,18 @@ describe('memory_import', () => {
   });
 
   it('applies the same id rule to entities, observations, relations and sessions', async () => {
+    // Every table, not just learnings: whatever id shape goes in, only UUIDs
+    // come out. The observation and relation here point at entities that do
+    // not exist, so they are skipped for REFERENTIAL reasons — which is what
+    // those counters are for, and proves the id rule did not swallow them.
     const { memoryImport } = await import('./export.js');
     const { getDb } = await import('../db/client.js');
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
     const imp = await memoryImport({
       data: envelopeWith({
         sessions: [{ id: 's1', project: 'x' }],
         entities: [{ id: '../e', name: 'Evil', entityType: 'person' }],
-        observations: [{ id: 'o1', entityId: ID.entity, content: 'orphan' }],
+        observations: [{ id: 'o1', entityId: ID.ghostEntity, content: 'orphan' }],
         relations: [
           { id: 'r1', fromEntityId: ID.entity, toEntityId: ID.missingEntity, relationType: 'knows' },
         ],
@@ -441,16 +559,20 @@ describe('memory_import', () => {
     expect(imp.success).toBe(true);
     if (imp.success) {
       const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
-      expect(d.imported.sessions).toBe(0);
-      expect(d.imported.entities).toBe(0);
+      expect(d.imported.sessions).toBe(1);
+      expect(d.imported.entities).toBe(1);
       expect(d.imported.observations).toBe(0);
       expect(d.imported.relations).toBe(0);
-      expect(d.skipped.malformed).toBe(4);
+      expect(d.skipped.observationsMissingEntity).toBe(1);
+      expect(d.skipped.relationsMissingEndpoint).toBe(1);
+      expect(d.skipped.malformed).toBe(0);
     }
-    for (const t of ['sessions', 'entities', 'entity_observations', 'entity_relations']) {
-      const c = (getDb().prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c;
-      expect(c, t).toBe(0);
-    }
+    const db = getDb();
+    const sid = (db.prepare('SELECT id FROM sessions').get() as { id: string }).id;
+    const eid = (db.prepare('SELECT id FROM entities').get() as { id: string }).id;
+    expect(sid).toMatch(uuid);
+    expect(eid).toMatch(uuid);
+    expect(eid).not.toContain('..');
   });
 
   it('still round-trips a real export after the tightening', async () => {
