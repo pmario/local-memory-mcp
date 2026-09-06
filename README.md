@@ -357,7 +357,7 @@ Two products, same team, different use cases:
 
 | | **local-memory-mcp** (this repo) | **StudioMeyer Memory** (hosted) |
 |---|---|---|
-| Where | Your machine (SQLite + sqlite-vec) | Cloud (Supabase EU Frankfurt) |
+| Where | Your machine (SQLite + sqlite-vec) | Cloud (our own Postgres, Hetzner Germany, EU) |
 | Tools | 25 | 56 |
 | Search | FTS5 + sqlite-vec hybrid (RRF) | FTS5 + pgvector + cross-encoder reranking |
 | Embeddings | Local (multilingual-e5-small, 384-dim) | Cloud (multiple models, reranking) |
