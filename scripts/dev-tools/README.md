@@ -88,6 +88,11 @@ selects another store.
 - The target must be a new or empty directory. The script never deletes
   anything; remove a previous export yourself.
 - Idempotent: the same store always produces a byte-identical tree.
+- `--sync` writes a tree two machines can merge in git. It leaves out
+  values that differ per machine (learning `usageCount`/`lastUsed`, entity
+  `updated`, meta provenance such as `first_run_at`), `INDEX.md`, and
+  sessions that have not ended. Session files are named by start time, so
+  sessions arriving from another machine renumber nothing.
 - Refuses (instead of silently losing data) when the store's columns or
   `schema_version` do not match what the script was written for.
 - Heading-like content lines are escaped (`\## `, see tree format above),
@@ -116,9 +121,10 @@ and FTS rebuild all apply.
 - New entries: drop an id-less `.md` into `learnings/`. The script assigns
   a UUID and writes it back into the file, so nothing imports twice.
   Importing into an existing store additionally needs `--merge`.
-- Edits to existing entries land only via a fresh rebuild: import into a
-  new file (`--db <newfile> --apply`), then swap it in **with all MCP
-  servers stopped** (also remove the old `-wal`/`-shm` siblings).
+- Edits to existing entries land with `--update` (below). The alternative
+  that reproduces every field exactly is a fresh rebuild: import into a new
+  file (`--db <newfile> --apply`), then swap it in **with all MCP servers
+  stopped** (also remove the old `-wal`/`-shm` siblings).
 - `--from-envelope <file>` imports an existing JSON envelope instead of a
   tree; it cannot be combined with a tree argument or the envelope output
   flags.
@@ -126,11 +132,16 @@ and FTS rebuild all apply.
   mismatches land in `<mdDir>/verify.log` and set exit code 1. That is the
   modification detector: edit a tree file, `--verify` names the entry and
   field that now differ from the store.
-- `--update` (with `--apply`; implies `--merge`) pushes tree-side edits of
-  existing learnings back through the server's `memory_learn_update`. Only content,
-  confidence and tags can change; a differing category, project, source,
-  memoryType or date is reported and left untouched (archive-and-rewrite
-  is the only remedy). The dry run predicts the updates. Learnings only.
+- `--update` (with `--apply`; implies `--merge`) brings existing records up
+  to the tree's state, so nothing is left for the next export to revert:
+  learning content, confidence and tags through `memory_learn_update`
+  (re-embeds), entity summaries through `memory_entity_create`, and
+  learning archive state, observation `validTo` and session end written
+  exactly as the tree has them. Lifecycle only moves forward: nothing
+  reopens an archived learning, a superseded observation or an ended
+  session. Other differences (category, project, source, memoryType, date,
+  entity name or type) are reported and left untouched. The dry run
+  predicts every change; a second run finds none.
   **Caution:** an update overwrites the stored value with no history, and
   it waives the import's "existing rows are never touched" guarantee, so a
   foreign tree carrying your ids could rewrite what you already know.
@@ -150,4 +161,5 @@ and FTS rebuild all apply.
 The main test suite pins both scripts to the shipped schema
 (`schema-pin.test.mjs`) and fails the moment a schema change requires
 updating them, and covers the tree-format escaping round trip and the
-structural-injection guard (`md-tree-format.test.mjs`).
+structural-injection guard (`md-tree-format.test.mjs`) and the `--sync`
+export with the `--update` reconcile (`md-sync.test.mjs`).

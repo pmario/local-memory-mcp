@@ -75,6 +75,10 @@ Options:
   -e, --export      perform the export (default is a dry run)
   --db <path>       source database
                     (default: MEMORY_DB_PATH env, else <data-dir>/memory.sqlite)
+  --sync            a tree two machines can merge in git: leaves out
+                    machine-local values (learning usageCount/lastUsed,
+                    entity updated, meta provenance), INDEX.md and
+                    sessions that have not ended yet
   --dry-run         explicit dry run (same as the default)
   --help            show this help
 
@@ -97,6 +101,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
 }
 if (argv.length === 0) process.stdout.write(HELP + '\n');
 const doExport = argv.includes('-e') || argv.includes('--export');
+const syncMode = argv.includes('--sync');
 const dbFlag = argv.indexOf('--db');
 const dbPath = dbFlag !== -1 ? argv[dbFlag + 1] : (process.env.MEMORY_DB_PATH ?? join(defaultDataDir(), 'memory.sqlite'));
 const positional = argv.filter((a, i) => !a.startsWith('-') && argv[i - 1] !== '--db');
@@ -147,7 +152,7 @@ if (!doExport) {
 	console.log('Store content:');
 	console.log(`  learnings: ${count('learnings')} (${db.prepare('SELECT COUNT(*) AS n FROM learnings WHERE archived = 1').get().n} archived)`);
 	console.log(`  decisions: ${count('decisions')}`);
-	console.log(`  sessions: ${count('sessions')}`);
+	console.log(`  sessions: ${count('sessions')}${syncMode ? ` (${db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE ended_at IS NOT NULL').get().n} ended, the only ones --sync exports)` : ''}`);
 	console.log(`  entities: ${count('entities')} (${count('entity_observations')} observations, ${count('entity_relations')} relations)`);
 	console.log('');
 	console.log(`  -> ${outDir} (${targetState === 'missing' ? 'will be created' : targetState === 'empty' ? 'empty, ok' : 'NOT EMPTY: a real run would refuse'})`);
@@ -291,8 +296,10 @@ for (const l of learnings) {
 			category: l.category,
 			project: l.project,
 			tags: JSON.parse(l.tags_json),
-			usageCount: l.usage_count,
-			lastUsed: l.last_used,
+			// Every recall bumps these, so in a synced tree both machines would
+			// rewrite the same files on every sync.
+			usageCount: syncMode ? undefined : l.usage_count,
+			lastUsed: syncMode ? undefined : l.last_used,
 			confidence: l.confidence,
 			source: l.source,
 			verified: l.verified,
@@ -418,7 +425,7 @@ for (const e of entities) {
 	}
 	const rel = write(
 		join('entities', `${part(e.entity_type)}_${slug(e.name)}_${part(e.id.slice(0, 8))}.md`),
-		fm({ id: e.id, name: e.name, type: e.entity_type, created: e.created_at, updated: e.updated_at, confidence: e.confidence }) + body.replace(/\n+$/, '\n'),
+		fm({ id: e.id, name: e.name, type: e.entity_type, created: e.created_at, updated: syncMode ? undefined : e.updated_at, confidence: e.confidence }) + body.replace(/\n+$/, '\n'),
 		eWhat
 	);
 	if (!rel) { skippedEntityIds.add(e.id); continue; }
@@ -460,23 +467,27 @@ if (relations.length) {
 	}
 }
 
+// A synced tree carries only ended sessions: memory_session_end without an id
+// ends the newest open session, which could be one imported from the other
+// machine. Filenames carry the start time, not a sequence number, so sessions
+// arriving from another machine do not renumber the existing files.
 const sessions = db.prepare(
-	`SELECT id, started_at, ended_at, project, summary, tasks_json FROM sessions ORDER BY started_at, id`
+	`SELECT id, started_at, ended_at, project, summary, tasks_json FROM sessions ${syncMode ? 'WHERE ended_at IS NOT NULL ' : ''}ORDER BY started_at, id`
 ).all();
-sessions.forEach((s, i) => {
+for (const s of sessions) {
 	const tasks = JSON.parse(s.tasks_json ?? '[]');
 	const sWhat = `session ${String(s.started_at).slice(0, 10)} [${s.id}]`;
 	let body = s.summary == null ? '' : escapeContent(s.summary);
 	if (tasks.length) body += `\n\n## Open tasks\n\n${tasks.map((t) => `- ${escapeContent(t)}`).join('\n')}`;
 	const rel = write(
-		join('sessions', `${String(i + 1).padStart(3, '0')}_${part(String(s.started_at).slice(0, 10))}_${part(s.id.slice(0, 8))}.md`),
+		join('sessions', `${part(String(s.started_at).slice(0, 19))}_${part(s.id.slice(0, 8))}.md`),
 		fm({ id: s.id, startedAt: s.started_at, endedAt: s.ended_at, project: s.project }) + body + '\n',
 		sWhat
 	);
-	if (!rel) return;
+	if (!rel) continue;
 	wrote.sessions++;
 	index.sessions.push(`- [${String(s.started_at).slice(0, 16)}${s.project ? ' · ' + s.project : ''}](${rel})`);
-});
+}
 
 // All meta keys, always: schema_version lets the tree self-describe its
 // vintage (the importer checks it); embedding_model/embedding_dim/first_run_at
@@ -486,7 +497,11 @@ sessions.forEach((s, i) => {
 // not the store: it is written first, and a store key of that name would
 // spoof the format marker, so it is skipped too.
 const metaPairs = { tree_format: TREE_FORMAT };
+// A synced tree keeps only the keys the importer uses; provenance such as
+// first_run_at differs per machine and would conflict on every sync.
+const syncedMetaKey = (k) => k === 'schema_version' || k === 'current_goal' || k.startsWith('profile_');
 for (const r of db.prepare(`SELECT key, value FROM meta ORDER BY key`).all()) {
+	if (syncMode && !syncedMetaKey(r.key)) continue;
 	if (!isSafeKey(r.key)) {
 		skip(`meta key ${JSON.stringify(r.key)}`, 'not a bare identifier; would inject frontmatter lines', `${r.key}: ${r.value}`);
 		continue;
@@ -499,12 +514,16 @@ for (const r of db.prepare(`SELECT key, value FROM meta ORDER BY key`).all()) {
 }
 write('meta.md', fm(metaPairs) + 'Store metadata. tree_format is the tree\'s own format marker (not a store key); profile_* keys and current_goal are imported; schema_version guards the round trip; all other keys are server-owned provenance.\n', 'meta.md');
 
-let idx = `# Memory export\n\nSource: \`${dbPath}\` (read-only)\n\n`;
-for (const [section, lines] of Object.entries(index)) {
-	if (!lines.length) continue;
-	idx += `## ${section[0].toUpperCase() + section.slice(1)} (${lines.length})\n\n${lines.join('\n')}\n\n`;
+// INDEX.md lists every record, so in a synced tree both machines would edit
+// the same lines on every sync.
+if (!syncMode) {
+	let idx = `# Memory export\n\nSource: \`${dbPath}\` (read-only)\n\n`;
+	for (const [section, lines] of Object.entries(index)) {
+		if (!lines.length) continue;
+		idx += `## ${section[0].toUpperCase() + section.slice(1)} (${lines.length})\n\n${lines.join('\n')}\n\n`;
+	}
+	write('INDEX.md', idx, 'INDEX.md');
 }
-write('INDEX.md', idx, 'INDEX.md');
 
 // Skipped records land in a readable log so nothing is silently lost and the
 // offending data stays recoverable. Each entry leads with a human descriptor

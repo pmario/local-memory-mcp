@@ -4,7 +4,8 @@
  * store, by converting it to a studiomeyer-memory-export v1 envelope and
  * driving the built server's memory_import over MCP stdio. Using the official
  * import path means validation, re-embedding, FTS rebuild and FK-safe
- * ordering all apply; this script never writes SQL itself.
+ * ordering all apply; the only SQL this script writes is --update's exact
+ * archive, validity and session-end values, which no tool can set.
  *
  * The tree is FORMAT 2: in re-parsed bodies, heading-like content lines
  * arrive escaped ("\## ") and are unescaped after the structural parse, so a
@@ -16,9 +17,9 @@
  * The default run is a DRY RUN (validate + predict, write nothing); only
  * --apply imports. memory_import is additive (INSERT OR IGNORE on id):
  * existing ids are skipped, never updated, so re-applying the same tree is a
- * no-op. Editing an existing entry therefore lands only via a fresh-store
- * rebuild; adding new entries works against a live store with --merge. A
- * learning or decision file WITHOUT an id is a new entry: it gets a UUID
+ * no-op. Edits to existing entries land with --update; adding new entries
+ * works against a live store with --merge. A learning or decision file
+ * WITHOUT an id is a new entry: it gets a UUID
  * written back into its frontmatter, so repeated runs produce the identical
  * envelope (no duplicate imports).
  */
@@ -74,15 +75,22 @@ Options:
                         existing ids are skipped, never updated; re-running
                         the same import is a no-op). Only meaningful with
                         --apply; --merge alone is still a dry run.
-  --update              also push tree-side EDITS of existing learnings
-                        back into the store, via the server's
-                        memory_learn_update (validation and re-embedding
-                        apply). Only content, confidence and tags can
-                        change; a differing category, project, source,
-                        memoryType or date is reported and left untouched,
-                        archive-and-rewrite being the only remedy. Dry run
-                        predicts the updates; --apply --update performs
-                        them (--update implies --merge). Learnings only.
+  --update              also bring EXISTING records up to the tree's state,
+                        so a tree merged from two machines leaves nothing
+                        for the next export to revert:
+                          learning content, confidence, tags (through
+                          memory_learn_update, which re-embeds);
+                          entity summary (memory_entity_create);
+                          learning archive state, observation validTo,
+                          session end (written as the tree has them).
+                        Lifecycle only moves forward: an archived learning,
+                        superseded observation or ended session is never
+                        reopened. Anything else that differs (category,
+                        project, source, memoryType, date, entity name or
+                        type) is reported and left untouched. The dry run
+                        predicts every change; --apply --update performs
+                        them (--update implies --merge); a second run finds
+                        nothing to change.
                         CAUTION: an update OVERWRITES the stored value with
                         no history, and it waives the import's "existing
                         rows are never touched" guarantee. Export a backup
@@ -345,15 +353,22 @@ function ensureId(path, fields) {
 }
 
 const learnings = [];
-// --update must never push an envelope DEFAULT over a stored value, so
-// remember whether the file itself carried each updatable field.
+// --update and --verify must never treat an envelope DEFAULT as a tree value,
+// so remember which fields the file itself carried.
 const fieldPresence = new Map();
+const ALL_PRESENT = { confidence: true, tags: true, archived: true, usageCount: true, lastUsed: true };
 for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 	const p = parseFile(path);
 	if (!p.ok) { skip(path, p.reason, p.data); continue; }
 	const { fields: f, body } = p;
 	const lid = ensureId(path, f);
-	fieldPresence.set(lid, { confidence: f.confidence !== undefined, tags: f.tags !== undefined });
+	fieldPresence.set(lid, {
+		confidence: f.confidence !== undefined,
+		tags: f.tags !== undefined,
+		archived: f.archived !== undefined,
+		usageCount: f.usageCount !== undefined,
+		lastUsed: f.lastUsed !== undefined,
+	});
 	learnings.push({
 		id: lid,
 		date: f.date ?? null,
@@ -437,6 +452,8 @@ const parseKvBlock = (lines) => {
 
 const entities = [];
 const observations = [];
+// A --sync tree leaves out entity "updated", so --verify must not compare it.
+const entityUpdatedPresent = new Set();
 for (const path of listMd('entities')) {
 	const p = parseFile(path);
 	if (!p.ok) { skip(path, p.reason, p.data); continue; }
@@ -472,6 +489,7 @@ for (const path of listMd('entities')) {
 		});
 	}
 	if (bad) { skip(path, bad, body); continue; }
+	if (f.updated !== undefined) entityUpdatedPresent.add(f.id);
 	entities.push({
 		id: f.id,
 		name: f.name,
@@ -570,28 +588,48 @@ if (fromEnvelope) {
 	}
 }
 
-// ── --update: learnings whose tree side differs from the target store ──
-// Only the fields memory_learn_update can change are pushed (content,
-// confidence, tags). A differing identity field is collected as a warning
-// and left alone: the server cannot change it, archive-and-rewrite is the
-// only remedy. A field absent from a hand-authored file is never pushed,
-// so its envelope default cannot clobber the stored value.
+// ── --update: bring existing records up to the tree's state ──
+// A tree change the import does not apply is reverted by this store's next
+// export, so every field that can change after creation is covered here.
 const updates = [];
+const entityUpdates = [];
+const sqlUpdates = [];
 const updateWarnings = [];
+// The states memory_learn_archive and the schema default produce.
+const LIFECYCLE = /^(active|ephemeral|archived|archived:[\s\S]{1,500})$/;
+const isoish = (v) => v === null || (typeof v === 'string' && v.length <= 64);
+const orNull = (v) => (v === undefined || v === '' ? null : v);
 if (doUpdate && existsSync(targetDb)) {
 	const Database = require('better-sqlite3');
 	const udb = new Database(targetDb, { readonly: true });
 	const rows = new Map(udb.prepare('SELECT * FROM learnings').all().map((r) => [r.id, r]));
+	const entityRows = new Map(udb.prepare('SELECT id, name, entity_type, summary FROM entities').all().map((r) => [r.id, r]));
+	const obsRows = new Map(udb.prepare('SELECT id, valid_to FROM entity_observations').all().map((r) => [r.id, r]));
+	const sessionRows = new Map(udb.prepare('SELECT id, ended_at, summary, tasks_json FROM sessions').all().map((r) => [r.id, r]));
 	udb.close();
 	for (const l of envelope.learnings) {
 		const r = rows.get(l.id);
 		if (!r) continue;
-		const present = fieldPresence.get(l.id) ?? { confidence: true, tags: true };
+		const present = fieldPresence.get(l.id) ?? ALL_PRESENT;
 		const set = {};
 		if (l.content !== r.content) set.content = l.content;
 		if (present.confidence && l.confidence !== r.confidence) set.confidence = l.confidence;
 		if (present.tags && JSON.stringify(l.tags) !== JSON.stringify(JSON.parse(r.tags_json))) set.tags = l.tags;
-		if (Object.keys(set).length) updates.push({ id: l.id, set });
+		if (Object.keys(set).length) {
+			if (r.archived === 1) updateWarnings.push(`${l.id}: ${Object.keys(set).join(', ')} differ, but memory_learn_update cannot change an archived learning`);
+			else updates.push({ id: l.id, set });
+		}
+		// Written after the memory_learn_update calls, which refuse an archived learning.
+		if (present.archived) {
+			const archived = l.archived === true || l.archived === 1 ? 1 : 0;
+			const archivedAt = orNull(l.archivedAt);
+			const lifecycle = String(l.lifecycleState ?? 'active');
+			if (archived !== r.archived || archivedAt !== r.archived_at || lifecycle !== r.lifecycle_state) {
+				if (r.archived === 1 && archived === 0) updateWarnings.push(`${l.id}: archived in the store but not in the tree; nothing reopens an archived learning`);
+				else if (!LIFECYCLE.test(lifecycle) || !isoish(archivedAt)) updateWarnings.push(`${l.id}: archive state ${JSON.stringify(lifecycle.slice(0, 40))} at ${JSON.stringify(archivedAt)} is not one the server writes`);
+				else sqlUpdates.push({ what: `learning ${l.id}: ${lifecycle.slice(0, 40)}`, sql: 'UPDATE learnings SET archived = ?, archived_at = ?, lifecycle_state = ? WHERE id = ?', args: [archived, archivedAt, lifecycle, l.id] });
+			}
+		}
 		for (const [field, tree, db] of [
 			['category', l.category, r.category],
 			['project', l.project ?? null, r.project],
@@ -601,6 +639,40 @@ if (doUpdate && existsSync(targetDb)) {
 		]) {
 			if (tree !== db) updateWarnings.push(`${l.id}: ${field} differs (tree ${JSON.stringify(tree)}, store ${JSON.stringify(db)}); memory_learn_update cannot change it, archive-and-rewrite instead`);
 		}
+	}
+	const idByNameType = new Map([...entityRows.values()].map((r) => [`${r.name}\0${r.entity_type}`, r.id]));
+	for (const e of envelope.entities) {
+		const r = entityRows.get(e.id);
+		if (!r) {
+			const other = idByNameType.get(`${e.name}\0${e.entityType}`);
+			if (other) updateWarnings.push(`entity "${e.name}" (${e.entityType}) [${e.id}]: the store holds that name as [${other}], so memory_import skips it and its observations`);
+			continue;
+		}
+		if (e.name !== r.name || e.entityType !== r.entity_type) {
+			updateWarnings.push(`entity ${e.id}: name or type differs (tree "${e.name}" (${e.entityType}), store "${r.name}" (${r.entity_type})); nothing renames an entity`);
+		} else if (orNull(e.summary) !== orNull(r.summary)) {
+			if (orNull(e.summary) === null) updateWarnings.push(`entity ${e.id}: no summary in the tree; memory_entity_create cannot clear one`);
+			else entityUpdates.push({ id: e.id, args: { name: r.name, entityType: r.entity_type, summary: e.summary } });
+		}
+	}
+	for (const o of envelope.observations) {
+		const r = obsRows.get(o.id);
+		const validTo = orNull(o.validTo);
+		if (!r || validTo === r.valid_to) continue;
+		if (validTo === null) updateWarnings.push(`observation ${o.id}: superseded in the store but not in the tree; nothing reopens an observation`);
+		else if (!isoish(validTo)) updateWarnings.push(`observation ${o.id}: validTo ${JSON.stringify(String(validTo).slice(0, 40))} is not a timestamp`);
+		else sqlUpdates.push({ what: `observation ${o.id}: validTo ${validTo}`, sql: 'UPDATE entity_observations SET valid_to = ? WHERE id = ?', args: [validTo, o.id] });
+	}
+	for (const s of envelope.sessions) {
+		const r = sessionRows.get(s.id);
+		const endedAt = orNull(s.endedAt);
+		// A session open in the tree is one this tree saw before it ended.
+		if (!r || endedAt === null) continue;
+		const tasks = s.tasks ?? [];
+		if (endedAt === r.ended_at && orNull(s.summary) === orNull(r.summary) && JSON.stringify(tasks) === JSON.stringify(JSON.parse(r.tasks_json ?? '[]'))) continue;
+		const valid = isoish(endedAt) && (orNull(s.summary) === null || (typeof s.summary === 'string' && s.summary.length <= 10000)) && Array.isArray(tasks) && tasks.length <= 1000 && tasks.every((t) => typeof t === 'string' && t.length <= 2000);
+		if (!valid) updateWarnings.push(`session ${s.id}: end, summary or tasks are not values session_end writes`);
+		else sqlUpdates.push({ what: `session ${s.id}: ended ${endedAt}`, sql: 'UPDATE sessions SET ended_at = ?, summary = ?, tasks_json = ? WHERE id = ?', args: [endedAt, orNull(s.summary), tasks.length ? JSON.stringify(tasks) : null, s.id] });
 	}
 }
 
@@ -687,8 +759,9 @@ function runVerify() {
 		compare('learning', l.id, 'content', l.content, r.content);
 		compare('learning', l.id, 'project', l.project, r.project);
 		compare('learning', l.id, 'tags', l.tags, JSON.parse(r.tags_json));
-		compare('learning', l.id, 'usageCount', l.usageCount, r.usage_count);
-		compare('learning', l.id, 'lastUsed', l.lastUsed, r.last_used);
+		const present = fieldPresence.get(l.id) ?? ALL_PRESENT;
+		if (present.usageCount) compare('learning', l.id, 'usageCount', l.usageCount, r.usage_count);
+		if (present.lastUsed) compare('learning', l.id, 'lastUsed', l.lastUsed, r.last_used);
 		compare('learning', l.id, 'confidence', l.confidence, r.confidence);
 		compare('learning', l.id, 'source', l.source, r.source);
 		compare('learning', l.id, 'verified', l.verified, r.verified);
@@ -726,7 +799,7 @@ function runVerify() {
 		compare('entity', e.id, 'name', e.name, r.name);
 		compare('entity', e.id, 'entityType', e.entityType, r.entity_type);
 		compare('entity', e.id, 'createdAt', e.createdAt, r.created_at);
-		compare('entity', e.id, 'updatedAt', e.updatedAt, r.updated_at);
+		if (fromEnvelope || entityUpdatedPresent.has(e.id)) compare('entity', e.id, 'updatedAt', e.updatedAt, r.updated_at);
 		compare('entity', e.id, 'summary', e.summary, r.summary);
 		compare('entity', e.id, 'confidence', e.confidence, r.confidence);
 	}
@@ -811,6 +884,10 @@ if (!apply) {
 		} else {
 			console.log(`  --update: ${updates.length} existing learning(s) would be updated`);
 			for (const u of updates) console.log(`    ${u.id}: ${Object.keys(u.set).join(', ')}`);
+			console.log(`  --update: ${entityUpdates.length} entity summary(ies) would be updated`);
+			for (const u of entityUpdates) console.log(`    ${u.id}: summary`);
+			console.log(`  --update: ${sqlUpdates.length} archive, validity or session change(s) would be written`);
+			for (const u of sqlUpdates) console.log(`    ${u.what}`);
 			for (const w of updateWarnings) console.log(`    NOT UPDATABLE ${w}`);
 		}
 	}
@@ -891,31 +968,50 @@ await request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, c
 send({ jsonrpc: '2.0', method: 'notifications/initialized' });
 
 const importReply = await request('tools/call', { name: 'memory_import', arguments: { data: envelope } });
-console.log(importReply.result?.content?.[0]?.text ?? JSON.stringify(importReply));
+const importText = importReply.result?.content?.[0]?.text ?? JSON.stringify(importReply);
+console.log(importText);
+// A record the server skipped is missing from this store, so the store's next
+// export would drop it from the tree: fail, and name each one after exit.
+let importResult = null;
+try {
+	importResult = JSON.parse(importText);
+} catch (e) {
+	if (!(e instanceof SyntaxError)) throw e;
+}
+const skippedTotal = Object.values(importResult?.data?.skipped ?? {}).reduce((a, b) => a + b, 0);
+const importIncomplete = importResult?.success !== true || skippedTotal > 0;
+
+// The reply text is a ToolResult JSON; non-JSON text is an anticipated
+// failure shape and stays ok=false, anything else propagates.
+const callTool = async (name, args) => {
+	const reply = await request('tools/call', { name, arguments: args });
+	const text = reply.result?.content?.[0]?.text ?? JSON.stringify(reply);
+	try {
+		return { ok: JSON.parse(text).success === true, text };
+	} catch (e) {
+		if (!(e instanceof SyntaxError)) throw e;
+		return { ok: false, text };
+	}
+};
 
 if (doUpdate) {
 	let updated = 0;
 	let failedCount = 0;
-	for (const u of updates) {
-		const reply = await request('tools/call', { name: 'memory_learn_update', arguments: { learningId: u.id, ...u.set } });
-		const text = reply.result?.content?.[0]?.text ?? JSON.stringify(reply);
-		let ok = false;
-		// The reply text is a ToolResult JSON; non-JSON text is an anticipated
-		// failure shape and stays ok=false, anything else propagates.
-		try {
-			ok = JSON.parse(text).success === true;
-		} catch (e) {
-			if (!(e instanceof SyntaxError)) throw e;
-		}
+	const calls = [
+		...updates.map((u) => ({ id: u.id, what: Object.keys(u.set).join(', '), name: 'memory_learn_update', args: { learningId: u.id, ...u.set } })),
+		...entityUpdates.map((u) => ({ id: u.id, what: 'summary', name: 'memory_entity_create', args: u.args })),
+	];
+	for (const c of calls) {
+		const { ok, text } = await callTool(c.name, c.args);
 		if (ok) {
 			updated++;
-			console.log(`updated ${u.id}: ${Object.keys(u.set).join(', ')}`);
+			console.log(`updated ${c.id}: ${c.what}`);
 		} else {
 			failedCount++;
-			console.warn(`  UPDATE FAILED ${u.id}: ${text.slice(0, 200)}`);
+			console.warn(`  UPDATE FAILED ${c.id}: ${text.slice(0, 200)}`);
 		}
 	}
-	console.log(`Updated ${updated} learning(s)${failedCount ? `, ${failedCount} FAILED` : ''}.`);
+	console.log(`Updated ${updated} record(s)${failedCount ? `, ${failedCount} FAILED` : ''}.`);
 	for (const w of updateWarnings) console.warn(`  NOT UPDATABLE ${w}`);
 	if (failedCount) process.exitCode = 1;
 }
@@ -923,7 +1019,26 @@ if (doUpdate) {
 clearTimeout(deadline);
 // Post-steps only after the server has really exited: it may still hold
 // the SQLite lock, and reading the store too early is a crash race.
+// No tool writes an exact archive time, validity end or session end, so these
+// are set directly; the FTS triggers still fire.
+function writeSqlUpdates() {
+	const Database = require('better-sqlite3');
+	const wdb = new Database(targetDb);
+	wdb.pragma('busy_timeout = 10000');
+	wdb.transaction(() => {
+		for (const u of sqlUpdates) wdb.prepare(u.sql).run(...u.args);
+	})();
+	wdb.close();
+	console.log(`Wrote ${sqlUpdates.length} archive, validity or session change(s).`);
+}
+
 const post = () => {
+	if (importIncomplete) {
+		for (const l of err.split('\n').filter((x) => x.includes('[import] skipped'))) console.error(`  ${l.trim()}`);
+		console.error(`IMPORT INCOMPLETE: ${importResult?.success === true ? `${skippedTotal} record(s) skipped` : 'memory_import failed'}. This store now lacks them, so its next export would drop them.`);
+		process.exitCode = 1;
+	}
+	if (sqlUpdates.length) writeSqlUpdates();
 	const embedWarns = err.split('\n').filter((l) => l.includes('embedding write skipped'));
 	if (embedWarns.length) console.log(`WARN: ${embedWarns.length} embeddings skipped (rows imported without vectors).`);
 	const v = schemaVersionOf(targetDb);
