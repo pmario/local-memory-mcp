@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.4.3] — 2026-08-09
+
+Security + correctness release. 239 → **251 tests**. No schema change, no API change.
+
+### Fixed — `memory_import` bypassed the validation every other write path enforces ([#29](https://github.com/studiomeyer-io/local-memory-mcp/issues/29))
+
+Reported by [@pmario](https://github.com/pmario) with a runnable repro.
+
+`memoryImport()` guarded incoming records with `isStr()` / `asNum()` instead of the Zod shapes the interactive tools use, which made the import envelope the one route into the database that skipped every constraint. An envelope could therefore write rows no tool could create: an open-string `category`, `confidence` of `999`, 50 000 characters of `content` (embedded *before* the row was evaluated), an off-enum `memoryType`, and — the part that matters most — an arbitrary `id`.
+
+A non-UUID id does not stay inside its row. It becomes the primary key in the `embeddings` table, a key in the FTS index, and the key of the in-memory vector map, which is only collision-free across record types *because* ids are UUIDs. It also reaches downstream filenames in tooling built on top of an export. `../x` was therefore a path-traversal vector rather than a data-quality wart.
+
+Every record type is now parsed with a Zod shape mirroring the bounds of its interactive counterpart — `learnSchema`, `decideSchema`, `entityCreateSchema`, `entityObserveSchema`, `entityRelateSchema` — and every id and foreign key is normalised to a UUID (see below). Failures land in the existing `skipped.malformed` counter, so an import stays additive and one bad record never aborts the envelope. Unknown *fields* are still stripped rather than rejected, so an envelope from a newer exporter remains importable by an older server.
+
+The embedding pass now shares those parsed results instead of running its own parallel copy of the guards, which closes a second gap: an oversized field used to be paid for in inference and thrown away afterwards. Schema validity can no longer drift between the two phases. *Referential* eligibility still cannot be known before the transaction — an observation whose entity is missing, or a row `INSERT OR IGNORE` drops as a duplicate, is embedded before that is decidable — so a wasted embedding is still possible; it is simply never attached.
+
+`LEARNING_CATEGORIES` is exported from `learn.ts` so import and `learn()` validate against one list rather than two copies that drift.
+
+**Ids are canonicalised, not rejected.** Refusing a non-UUID id looks safer and is worse. Until v2.4.2 the import accepted any string, so anyone who fed this server through a hand-rolled importer has non-UUID rows in their database today; their next export carries those ids, and a strict import would drop exactly the rows a restore exists to save. A non-UUID id is therefore mapped to an RFC 4122 §4.3 name-based (v5) UUID derived from it. The mapping is deterministic, so re-importing the same envelope stays idempotent and `INSERT OR IGNORE` still dedupes; and pure, so a foreign key resolves to the same value as the id it points at with no bookkeeping. Ids that are already UUIDs pass through untouched, so a normal export round-trips unchanged. An empty id remains malformed — there is nothing to derive from.
+
+**Duplicate ids within one envelope are rejected.** Valid UUID syntax is not uniqueness. Two records sharing an id — within a type or across two — collide in the id-keyed vector map, and `INSERT OR IGNORE` would drop the second row after the first had already been handed its embedding, attaching one record's vector to another record's text. First occurrence wins; every later one counts as malformed.
+
+**The last unbounded writes are bounded.** `profile` values and `goal` reached the `meta` table with no length check, and `profile` took its key straight from the envelope. Values are capped, keys must be short and match `[A-Za-z0-9_.-]`. Each envelope array is capped at 100 000 items, with the overflow reported through `skipped.malformed` rather than truncated silently.
+
+### Changed — English for all user-facing strings ([#25](https://github.com/studiomeyer-io/local-memory-mcp/issues/25), [#28](https://github.com/studiomeyer-io/local-memory-mcp/pull/28))
+
+Also reported and fixed by [@pmario](https://github.com/pmario). `message:` values were German while `error:` values and the tool descriptions in `tools/registry.ts` were already English — 26 against 26, with 15 of the German ones containing English fragments. All 29 literals across 9 files are now English. No behaviour change. The PR also corrected an assertion in `session.test.ts` that checked for `'Projekt:'` and would otherwise have kept passing while testing nothing.
+
 ## [2.3.0] — 2026-06-21
 
 Retrieval-quality + correctness release. 194 → **233 tests**. No breaking schema change — entity embeddings are added on write and idempotently backfilled on next open.
