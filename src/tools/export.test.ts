@@ -524,6 +524,8 @@ describe('memory_import', () => {
       ['content empty', { ...valid, content: '' }],
       ['memoryType off enum', { ...valid, memoryType: 'bogus' }],
       ['lifecycleState off enum', { ...valid, lifecycleState: 'zombie' }],
+      ['lifecycleState archive reason over the 500 cap', { ...valid, lifecycleState: `archived:${'r'.repeat(501)}` }],
+      ['source over the 10k cap', { ...valid, source: 's'.repeat(10001) }],
       ['usageCount negative', { ...valid, usageCount: -1 }],
     ];
     for (const [label, learning] of cases) {
@@ -612,6 +614,47 @@ describe('memory_import', () => {
     expect(row.confidence).toBe(0.9);
     expect(row.verified).toBe(1); // boolean true normalised to the SQLite flag
     expect(row.memory_type).toBe('semantic');
+  });
+
+  it('imports a learning archived with a reason, keeping the reason', async () => {
+    // memory_learn_archive({ learningId, reason: 'superseded by X' }) stores
+    // lifecycle_state 'archived:superseded by X'; its export must import back.
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const imp = await memoryImport({
+      data: envelopeWith({
+        learnings: [
+          { id: ID.observation, category: 'pattern', content: 'archived with a reason', archived: 1, lifecycleState: 'archived:superseded by X' },
+        ],
+      }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.learnings).toBe(1);
+      expect(d.skipped.malformed).toBe(0);
+    }
+    const row = getDb().prepare('SELECT archived, lifecycle_state FROM learnings').get() as { archived: number; lifecycle_state: string };
+    expect(row).toEqual({ archived: 1, lifecycle_state: 'archived:superseded by X' });
+  });
+
+  it('imports a learning whose source is longer than 200 characters', async () => {
+    // memory_learn({ category: 'tool', content: '...', source: <269 chars> }) is
+    // accepted, so its export must import back.
+    const { memoryImport } = await import('./export.js');
+    const { getDb } = await import('../db/client.js');
+    const source = `Consolidated from ${'several project memories, '.repeat(10)}`;
+    expect(source.length).toBeGreaterThan(200);
+    const imp = await memoryImport({
+      data: envelopeWith({ learnings: [{ id: ID.observation, category: 'tool', content: 'long source', source }] }),
+    });
+    expect(imp.success).toBe(true);
+    if (imp.success) {
+      const d = imp.data as { imported: Record<string, number>; skipped: Record<string, number> };
+      expect(d.imported.learnings).toBe(1);
+      expect(d.skipped.malformed).toBe(0);
+    }
+    expect((getDb().prepare('SELECT source FROM learnings').get() as { source: string }).source).toBe(source);
   });
 
   it('applies the same id rule to entities, observations, relations and sessions', async () => {

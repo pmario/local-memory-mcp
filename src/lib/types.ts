@@ -14,7 +14,7 @@ export interface ToolContext {
 }
 
 export type MemoryType = 'episodic' | 'semantic';
-export type LifecycleState = 'active' | 'ephemeral' | 'archived';
+export type LifecycleState = 'active' | 'ephemeral' | 'archived' | `archived:${string}`;
 export type LearningCategory =
   | 'pattern'
   | 'mistake'

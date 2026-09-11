@@ -300,6 +300,14 @@ const zCount = z.number().int().min(0).nullish();
 const zFlag = z.union([z.literal(0), z.literal(1), z.boolean()]).nullish();
 const zIsoish = z.string().max(64).nullish();
 const zTags = z.array(z.string().max(200)).max(100).nullish();
+// memory_learn and memory_entity_observe take source unbounded, so the cap
+// sits with content's rather than rejecting what the tools stored.
+const zSource = zOptStr(10000);
+// memory_learn_archive stores 'archived:<reason>' (reason capped at 500), so
+// an envelope carrying that form must import rather than drop the learning.
+const zLifecycleState = z
+  .union([z.enum(['active', 'ephemeral', 'archived']), z.string().regex(/^archived:[\s\S]{1,500}$/)])
+  .nullish();
 
 // Bounds mirror learnSchema / decideSchema / entityCreateSchema /
 // entityObserveSchema / entityRelateSchema. Kept as separate shapes because the
@@ -332,7 +340,7 @@ const importObservationSchema = z.object({
   id: zId,
   entityId: zId,
   content: z.string().min(1).max(5000),
-  source: zOptStr(200),
+  source: zSource,
   sessionId: zId.nullish(),
   validFrom: zIsoish,
   validTo: zIsoish,
@@ -359,13 +367,13 @@ const importLearningSchema = z.object({
   usageCount: zCount,
   lastUsed: zIsoish,
   confidence: zConfidence,
-  source: zOptStr(200),
+  source: zSource,
   verified: zFlag,
   verifiedAt: zIsoish,
   archived: zFlag,
   archivedAt: zIsoish,
   importance: z.number().min(0).max(1).nullish(),
-  lifecycleState: z.enum(['active', 'ephemeral', 'archived']).nullish(),
+  lifecycleState: zLifecycleState,
   memoryType: z.enum(['episodic', 'semantic']).nullish(),
 });
 
@@ -381,7 +389,7 @@ const importDecisionSchema = z.object({
   project: zOptStr(200),
   tags: zTags,
   confidence: zConfidence,
-  source: zOptStr(200),
+  source: zSource,
   verified: zFlag,
   verifiedAt: zIsoish,
 });
