@@ -215,7 +215,8 @@ export const TOOLS: ToolDef[] = [
 
 // ─── Zod → JSON Schema (minimal) ────────────────────
 // Claude Desktop needs JSON Schema, not raw Zod. We support the subset our
-// tools actually use: object, string, number, boolean, array, enum, optional.
+// tools actually use: object, string, number, boolean, array, enum, optional,
+// and a refined string.
 
 type JsonSchema = Record<string, unknown>;
 
@@ -243,6 +244,12 @@ function zodToJsonSchema(schema: z.ZodTypeAny): JsonSchema {
     return zodToJsonSchema((schema as unknown as { _def: { innerType: z.ZodTypeAny } })._def.innerType);
   }
 
+  // A .refine()/.transform() wrapper, e.g. the date strings of entity_open and
+  // observation_supersede, which the fallback below would advertise as objects.
+  if (def.typeName === 'ZodEffects') {
+    return zodToJsonSchema((schema as unknown as { _def: { schema: z.ZodTypeAny } })._def.schema);
+  }
+
   if (def.typeName === 'ZodString') {
     const checks = (def as unknown as { checks?: Array<{ kind: string; value?: number }> }).checks ?? [];
     const result: JsonSchema = { type: 'string' };
@@ -267,8 +274,20 @@ function zodToJsonSchema(schema: z.ZodTypeAny): JsonSchema {
   if (def.typeName === 'ZodBoolean') return { type: 'boolean' };
 
   if (def.typeName === 'ZodArray') {
-    const inner = (schema as unknown as { _def: { type: z.ZodTypeAny } })._def.type;
-    return { type: 'array', items: zodToJsonSchema(inner) };
+    const arrayDef = def as unknown as {
+      type: z.ZodTypeAny;
+      minLength: { value: number } | null;
+      maxLength: { value: number } | null;
+      exactLength: { value: number } | null;
+    };
+    const min = arrayDef.exactLength ?? arrayDef.minLength;
+    const max = arrayDef.exactLength ?? arrayDef.maxLength;
+    return {
+      type: 'array',
+      items: zodToJsonSchema(arrayDef.type),
+      ...(min ? { minItems: min.value } : {}),
+      ...(max ? { maxItems: max.value } : {}),
+    };
   }
 
   if (def.typeName === 'ZodEnum') {
