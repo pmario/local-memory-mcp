@@ -1,7 +1,10 @@
 # Dev tools
 
-A lossless markdown export and import, and `retrieval-check.mjs`, which
-measures how well a build finds whole entries.
+A lossless markdown export and import, `backup-store.mjs` for a snapshot taken
+while servers run, `verify-install.mjs` to smoke-test a built server over MCP
+stdio, and `retrieval-check.mjs`, which measures how well a build finds whole
+entries. The install workflow those last two belong to is in
+[../keep/README.md](../keep/README.md).
 
 ## Markdown export / import
 
@@ -161,6 +164,34 @@ and FTS rebuild all apply.
   unless the whole envelope parses). Durable runs log each skip, with the
   file path and line, to `<mdDir>/error.log`.
 
+## backup-store.mjs: a snapshot while servers run
+
+```
+node scripts/dev-tools/backup-store.mjs [--db <path>] [--out <dir>] [--wait] [--no-copy]
+```
+
+Copies the store through SQLite's backup API, which yields a transactionally
+consistent single file, so no server has to stop and the raw-copy WAL trap above
+does not apply. It then compares the row counts of source and copy and fails if
+they differ. `--wait` holds off until every entry has an embedding row, which is
+what you want right after installing a build that re-embeds; `--no-copy` only
+watches that progress. The snapshot holds your memories — treat it like the
+store.
+
+## verify-install.mjs: does a built server actually work?
+
+```
+node scripts/dev-tools/verify-install.mjs <path to dist/server.js> [--wait] [--db <path>] [--out <dir>] [--query <text>]
+```
+
+Copies the store, starts that server against the copy over MCP stdio with the
+real model, and walks the path a client takes: handshake, `tools/list`,
+`memory_health`, `memory_session_start`, `memory_get`, hybrid `memory_search`.
+Exits 1 on the first failed step, including an empty search result, which is how
+a broken vector half shows up. Use `--wait` whenever the build changed the
+embeddings: until the background pass finishes, health reports no chunks and
+hybrid search finds nothing.
+
 ## retrieval-check.mjs: does a build find whole entries?
 
 ```
@@ -187,6 +218,19 @@ out of a repository and delete it when you are done.
   (chars 100-900) and `short` (entries inside the model's window). Each is
   reported per mode with r1, r5 and MRR.
 - Not part of `npm test`: it needs the real model and a real store.
+
+## Re-running them
+
+| Script | Second run |
+|---|---|
+| `export-md.mjs` | Byte-identical tree; the target must be new or empty, so remove a previous export yourself |
+| `import-md.mjs` | Adds 0 records; `--update` finds no differences after the first pass |
+| `backup-store.mjs` | **Adds another snapshot**, named by the minute; within the same minute it refuses rather than overwrite. Delete old snapshots yourself |
+| `verify-install.mjs` | Overwrites its one copy (`<out>/verify.sqlite`) and reports the same result |
+| `retrieval-check.mjs` | Overwrites its copy and its result file; the re-embed finds nothing to do the second time |
+
+None of them writes to the source store: it is opened read-only, so servers can
+keep running.
 
 ## Tests
 
