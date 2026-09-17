@@ -14,9 +14,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 let tmp = '';
-beforeEach(() => {
+beforeEach(async () => {
   tmp = mkdtempSync(join(tmpdir(), 'local-memory-contra-'));
   process.env.MEMORY_DB_PATH = join(tmp, 'test.sqlite');
+  // Open the store first: isVectorEnabled() is false until getDb() loads sqlite-vec, so vector tests would return early.
+  (await import('../db/client.js')).getDb();
 });
 afterEach(async () => {
   const { closeDb } = await import('../db/client.js');
