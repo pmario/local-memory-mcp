@@ -401,6 +401,33 @@ describe('learn_archive', () => {
 
 // ─── P3.3 v2.1.0 — learn_update ───────────────────────
 
+describe('learn_update append notice', () => {
+  // Brief results show only an entry's first line, so an appended amendment can leave that line stating an outdated claim.
+  async function update(original: string, change: { content?: string; confidence?: number }) {
+    const { learn, learnUpdate } = await import('./learn.js');
+    const created = await learn({ category: 'pattern', content: original });
+    if (!created.success) throw new Error(created.error);
+    const result = await learnUpdate({ learningId: (created.data as { id: string }).id, ...change });
+    if (!result.success) throw new Error(result.error);
+    return result.data as { notice?: string };
+  }
+
+  it('tells the caller to check the first line when content was only appended', async () => {
+    const data = await update('Claim: X is true.', { content: 'Claim: X is true.\n\nAMENDED: only on Tuesdays.' });
+    expect(data.notice).toContain('first line');
+  });
+
+  it('stays quiet when the entry was rewritten', async () => {
+    const data = await update('Claim: X is true.', { content: 'Claim: X is true only on Tuesdays.' });
+    expect(data).not.toHaveProperty('notice');
+  });
+
+  it('stays quiet on a confidence-only update and on unchanged content', async () => {
+    expect(await update('Stable claim.', { confidence: 0.9 })).not.toHaveProperty('notice');
+    expect(await update('Same claim.', { content: 'Same claim.' })).not.toHaveProperty('notice');
+  });
+});
+
 describe('learn_update', () => {
   it('updates content, bumps usage_count, and re-embeds atomically', async () => {
     const { learn, learnUpdate } = await import('./learn.js');

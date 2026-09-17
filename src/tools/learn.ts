@@ -258,6 +258,8 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
   const args: unknown[] = [nowIso()];
 
   const willChangeContent = input.content !== undefined && input.content !== existing.content;
+  // Brief results show only the first line, which an appended amendment leaves unchanged.
+  const appendedOnly = willChangeContent && (input.content as string).startsWith(existing.content);
   if (input.content !== undefined) {
     updates.push('content = ?');
     args.push(input.content);
@@ -301,6 +303,9 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
       action: 'updated',
       reembedded: willChangeContent && vec !== null,
       contentChanged: willChangeContent,
+      ...(appendedOnly
+        ? { notice: 'Appended without changing the start: check that the first line still states the current claim, or rewrite the entry.' }
+        : {}),
     },
     message: 'Learning updated.',
   };
