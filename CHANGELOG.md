@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-Lean session start and embeddings that cover whole entries. 26 tools, 269 → **328 tests**.
+Lean session start and embeddings that cover whole entries. 26 tools, 269 → **332 tests**.
 
 ### Changed — embeddings cover the whole entry
 
@@ -38,9 +38,25 @@ Headlines instead of bodies for learnings and decisions. The default stays `full
 
 Every client puts the instructions into each session's system prompt, and Claude Code cuts them at 2,048 chars. The text now lists the five calls of a session; the removed lifecycle and portability details moved to the new `memory_guide` topics `lifecycle` and `portability`.
 
+### Fixed — the ranking boost outranked better matches
+
+The 2.3.0 boost multiplied fused scores by up to 1.40, while adjacent ranks differ by 1.6%, so a fresh entry beat clear textual winners. The boost is now added, capped at half the gap between a ranker's first two positions, and rows a ranker scored equally share a position, so the boost decides their tie. On a real store its top-1 hit rate for short entries rose from 0.61 to 0.76.
+
+### Fixed — English search errors, honest tool schemas
+
+`memory_search` reported failures with the German prefix "Suchfehler". In `tools/list`, array parameters lost their length limits (`memory_get` 1–20 ids, `memory_learn_bulk` 1–500 items) and the date strings of `memory_entity_open` and `memory_observation_supersede` were advertised as objects.
+
 ### Fixed — guide text
 
 `search` said multi-word queries are AND-combined; they match any word. `learn` still promised merging of similar entries, removed in 2.4.0.
+
+### Added — retrieval check
+
+`scripts/dev-tools/retrieval-check.mjs` measures a build with queries taken from the store's own entries, so a change to the chunker, the chunk penalty or the ranking can be compared build by build.
+
+### Removed — `embedBatch`
+
+Chunks embed one by one (39 ms against 92 ms per chunk in batches of 16 on a CPU, because a batch pads every text to its longest member), which left the batch path without callers.
 
 ### Measured
 

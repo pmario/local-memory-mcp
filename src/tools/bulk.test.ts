@@ -116,33 +116,3 @@ describe('memory_learn_bulk', () => {
     expect(learnBulkSchema.safeParse(ok).success).toBe(true);
   });
 });
-
-describe('embedBatch', () => {
-  it('returns one 384-dim vector per text and matches single embed (mock mode)', async () => {
-    const { embedBatch, embed, embedMode, EMBEDDING_DIM } = await import('../lib/embed.js');
-    const out = await embedBatch(['alpha beta gamma', 'delta epsilon']);
-    expect(out.length).toBe(2);
-    expect(out[0]).not.toBeNull();
-    expect(out[0]!.length).toBe(EMBEDDING_DIM);
-    // Bit-equality between batch and single only holds for the deterministic
-    // mock embedder (the npm test script sets MEMORY_EMBED_MOCK=1). The real
-    // model's batched matmul differs at ~1e-6, which is cosine-irrelevant, so
-    // we only assert strict equality in mock mode to avoid a confusing red if
-    // this file is ever run standalone against the real model.
-    if (embedMode() === 'mock') {
-      const single = await embed('alpha beta gamma');
-      expect(Array.from(out[0]!)).toEqual(Array.from(single!));
-    }
-  });
-
-  it('handles multilingual input and an empty batch', async () => {
-    const { embedBatch, EMBEDDING_DIM } = await import('../lib/embed.js');
-    expect(await embedBatch([])).toEqual([]);
-    const out = await embedBatch(['café münchen', 'マルチリンガル', 'normal']);
-    expect(out.length).toBe(3);
-    for (const v of out) {
-      expect(v).not.toBeNull();
-      expect(v!.length).toBe(EMBEDDING_DIM);
-    }
-  });
-});
