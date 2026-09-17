@@ -8,15 +8,15 @@ Lean session start and embeddings that cover whole entries. 26 tools, 269 → **
 
 The embedding model reads 512 tokens, about 1,740 characters. In a real store 399 of 453 learnings were longer, and their vectors covered a median 51% of the text, so vector search never saw the rest. Entries are now split at paragraphs into chunks of at most 500 tokens, and chunks after the first repeat the entry's first line. An entry ranks by its best chunk, lowered by 0.01·ln(chunk count) so that long entries gain no advantage from having more chunks.
 
-Vectors move to `embedding_chunks` and `embedding_sources`, and the old `embeddings` table is dropped. After boot a background pass re-embeds the store; the measuring machine needed 216 s for 462 entries (1,422 chunks). The same pass re-embeds any entry whose text, chunker or model changed. `schema_version` stays 2: the exported data is unchanged.
+Vectors move to `embedding_chunks` and `embedding_sources`, and the old `embeddings` table is dropped. After boot a background pass re-embeds the store; 477 entries became 1,437 chunks in 35 s on the measuring machine. The same pass re-embeds any entry whose text, chunker or model changed. `schema_version` stays 2: the exported data is unchanged.
 
-Measured through each build's own `memory_search` on a copy of that store, real model, top-5 share and mean reciprocal rank:
+Measured with `scripts/dev-tools/retrieval-check.mjs` through each build's own `memory_search`, on one copy of a 477-entry store, real model, top-5 share and mean reciprocal rank. The after column also carries the ranking-boost fix below:
 
 | Queries (sentences from the entries) | vector before | vector after | hybrid before | hybrid after |
 |---|---|---|---|---|
-| past char 3,000 of long entries (80) | 0.21 / 0.165 | 0.50 / 0.404 | 0.45 / 0.330 | 0.75 / 0.630 |
-| chars 100–900 (80) | 0.72 / 0.618 | 0.72 / 0.637 | 0.89 / 0.793 | 0.91 / 0.790 |
-| entries up to 1,742 chars (51) | 0.78 / 0.663 | 0.78 / 0.708 | 0.92 / 0.763 | 0.90 / 0.747 |
+| past char 3,000 of long entries (80) | 0.21 / 0.163 | 0.51 / 0.432 | 0.45 / 0.326 | 0.75 / 0.648 |
+| chars 100–900 (80) | 0.69 / 0.595 | 0.69 / 0.604 | 0.86 / 0.763 | 0.85 / 0.772 |
+| entries up to 1,742 chars (65) | 0.82 / 0.729 | 0.82 / 0.747 | 0.92 / 0.802 | 0.94 / 0.867 |
 
 ### Added — notice when an amendment only appends
 
