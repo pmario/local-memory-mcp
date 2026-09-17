@@ -211,7 +211,7 @@ Use \`recall\` for quick keyword search on learnings only, or without arguments 
 
 \`memory_search\` modes: \`hybrid\` (default) fuses FTS5 (BM25) and vector cosine with Reciprocal Rank Fusion; \`fts\` and \`vector\` run one ranker alone. Embeddings come from multilingual-e5-small (100+ languages). If the vector extension can't load, search falls back to FTS5 and says so in \`notice\`.
 
-FTS5 uses bm25 ranking. Short queries work. Multi-word queries are AND-combined.`,
+FTS5 uses bm25 ranking. Short queries work. Multi-word queries match any of the words; entries matching more of them rank higher.`,
 
   entities: `# Knowledge Graph
 
@@ -228,7 +228,7 @@ Learnings are facts, patterns, insights that should persist across sessions.
 
 - Categories: pattern, mistake, insight, research, architecture, infrastructure, tool, workflow, performance, security.
 - Memory type: episodic ("it happened") or semantic ("it is true"). Auto-classified.
-- Duplicate handling: exact duplicates are skipped and bump the usage counter; very similar ones may be merged.`,
+- Duplicate handling: exact duplicates are skipped and bump the usage counter; similar entries are stored as new rows. To enrich an existing entry, call \`memory_learn_update\` with its id.`,
 
   lifecycle: `# Lifecycle
 

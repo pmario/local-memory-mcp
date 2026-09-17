@@ -70,3 +70,24 @@ describe('memory_guide keeps what INSTRUCTIONS no longer carries', () => {
     for (const text of ['fts', 'vector', 'hybrid', 'falls back']) expect(content).toContain(text);
   });
 });
+
+describe('memory_guide matches the code', () => {
+  async function topic(name: string): Promise<string> {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: name });
+    if (!result.success) throw new Error(result.error);
+    return (result.data as { content: string }).content;
+  }
+
+  it('search says a multi-word query matches any word, as escapeFtsQuery ORs the tokens', async () => {
+    const content = await topic('search');
+    expect(content).not.toContain('AND-combined');
+    expect(content).toContain('any of the words');
+  });
+
+  it('learn no longer promises merging of similar entries, removed in v2.4.0', async () => {
+    const content = await topic('learn');
+    expect(content).not.toContain('merged');
+    expect(content).toContain('memory_learn_update');
+  });
+});
