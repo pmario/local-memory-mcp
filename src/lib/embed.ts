@@ -33,10 +33,12 @@ import { logger } from './logger.js';
 export const EMBEDDING_DIM = 384;
 export const DEFAULT_EMBED_MODEL = 'Xenova/multilingual-e5-small';
 
-type FeatureExtractionPipeline = (
+type FeatureExtractionPipeline = ((
   text: string | string[],
   options: { pooling: 'mean' | 'cls' | 'none'; normalize: boolean }
-) => Promise<{ data: Float32Array | number[]; dims: number[] }>;
+) => Promise<{ data: Float32Array | number[]; dims: number[] }>) & {
+  tokenizer?: { encode: (text: string) => number[] };
+};
 
 interface EmbedderState {
   ready: boolean;
@@ -225,6 +227,16 @@ export async function embed(text: string): Promise<Float32Array | null> {
     }
     return null;
   }
+}
+
+/**
+ * Counts the tokens embed() hands the model for a passage, prefix and special tokens included.
+ * Without the real tokenizer (mock, disabled, load failure) it estimates 3.4 chars per token, the median measured on a real store.
+ */
+export async function passageTokenCounter(): Promise<(text: string) => number> {
+  const tokenizer = state.mode === 'real' ? (await getPipeline())?.tokenizer : undefined;
+  if (tokenizer) return (text) => tokenizer.encode(`passage: ${text}`).length;
+  return (text) => Math.ceil(`passage: ${text}`.length / 3.4);
 }
 
 /**

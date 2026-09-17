@@ -856,7 +856,7 @@ describe('entityDelete', () => {
     const db = getDb();
     // Sanity check: embeddings exist before delete.
     const before = db
-      .prepare('SELECT content_id FROM embeddings WHERE content_id IN (?, ?)')
+      .prepare('SELECT content_id FROM embedding_sources WHERE content_id IN (?, ?)')
       .all(obsId1, obsId2) as Array<{ content_id: string }>;
     expect(before.length).toBe(2);
 
@@ -864,7 +864,7 @@ describe('entityDelete', () => {
 
     // After delete: zero embedding rows for those observation ids.
     const after = db
-      .prepare('SELECT content_id FROM embeddings WHERE content_id IN (?, ?)')
+      .prepare('SELECT content_id FROM embedding_sources WHERE content_id IN (?, ?)')
       .all(obsId1, obsId2) as Array<{ content_id: string }>;
     expect(after.length).toBe(0);
   });

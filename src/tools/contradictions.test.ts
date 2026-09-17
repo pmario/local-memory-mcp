@@ -252,7 +252,7 @@ describe('memory_contradictions', () => {
 
   it('silently excludes observations without an embedding row (pre-v2 legacy data)', async () => {
     // Observations created before v2.0.0 (or under MEMORY_EMBED_DISABLED=1)
-    // have no `embeddings` row. The scanner's INNER JOIN to `embeddings`
+    // have no embedding row. The scanner's INNER JOIN to `embedding_chunks`
     // drops those rows automatically. We don't crash, we don't double-count.
     // Verifying the shape gives users with mixed-vintage data confidence
     // the tool degrades gracefully.
@@ -275,14 +275,15 @@ describe('memory_contradictions', () => {
     const pre = await entityObserve({ entityId: eid, content: 'legacy observation no embedding' });
     if (!pre.success) throw new Error('observe failed');
     const preId = (pre.data as { observationId: string }).observationId;
-    getDb().prepare('DELETE FROM embeddings WHERE content_id = ?').run(preId);
+    const { deleteEmbeddings } = await import('../db/vector.js');
+    deleteEmbeddings([preId], getDb());
 
     // Sanity check: the live obs still has its embedding, the legacy one doesn't.
     const liveCnt = (getDb()
-      .prepare('SELECT COUNT(*) AS c FROM embeddings WHERE content_id = ?')
+      .prepare('SELECT COUNT(*) AS c FROM embedding_sources WHERE content_id = ?')
       .get(liveId) as { c: number }).c;
     const preCnt = (getDb()
-      .prepare('SELECT COUNT(*) AS c FROM embeddings WHERE content_id = ?')
+      .prepare('SELECT COUNT(*) AS c FROM embedding_sources WHERE content_id = ?')
       .get(preId) as { c: number }).c;
     expect(liveCnt).toBe(1);
     expect(preCnt).toBe(0);

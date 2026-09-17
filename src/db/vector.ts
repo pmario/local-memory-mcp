@@ -15,18 +15,20 @@
  *
  * The contract for callers (search.ts, learn.ts, decide.ts, entity.ts):
  *   - call `loadVecExtension(db)` exactly once, right after schema bootstrap
- *   - check `isVectorEnabled()` before touching the `embeddings` virtual table
- *   - use `upsertEmbedding()` to write an embedding for a row in another table
+ *   - check `isVectorEnabled()` before touching `embedding_chunks` / `embedding_sources`
+ *   - `prepareEmbedding()` outside a transaction, `writeEmbeddingSync()` inside it
  *   - use `deleteEmbeddings()` to clean up after deleting source rows
  *   - never crash if a vec query fails; fall through to the FTS5 path
  */
 import type { Database } from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logger } from '../lib/logger.js';
-import { embed, embedBatch, EMBEDDING_DIM, embedModelId } from '../lib/embed.js';
+import { embed, EMBEDDING_DIM, embedMode, embedModelId, passageTokenCounter } from '../lib/embed.js';
+import { chunkText, CHUNKER_ID } from '../lib/chunk.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -87,87 +89,35 @@ export function loadVecExtension(db: Database): boolean {
   }
 }
 
+const MIGRATION = '003_chunked_embeddings.sql';
+
 /**
- * After loadVecExtension succeeds, apply the embeddings VIRTUAL TABLE
- * migration. Safe to call multiple times — `CREATE VIRTUAL TABLE IF NOT
- * EXISTS` is a no-op when the table is already there. Returns true if the
- * embeddings table exists after this call.
- *
- * F7 hardening (Critic R1): after the migration runs we cross-check the
- * meta-table fingerprint (`embedding_dim`, `embedding_model`) against the
- * runtime configuration. If the dims don't match (e.g. a user swapped to a
- * 768-dim model) we disable vec for this run so we never silently truncate
- * vectors into the wrong space. Model-name mismatches log a warning but
- * don't disable — same dims with a different model is a soft case where
- * cosine similarity is still meaningful, just not optimal.
+ * Apply the embedding tables after loadVecExtension succeeded; idempotent, runs every boot.
+ * A model or chunker change is not a schema matter: the source rows record both and the backfill re-embeds.
  */
 export function applyVectorSchema(db: Database): boolean {
   if (!vectorEnabled) return false;
 
-  // The migration file ships alongside the compiled output. In dev mode
-  // we read from src/db/migrations; in dist we read from dist/db/migrations.
-  // Both paths exist relative to __dirname (`db/`).
+  // dist/db/migrations after a build, src/db/migrations when run from source.
   const candidates = [
-    join(__dirname, 'migrations', '002_vector.sql'),
-    join(__dirname, '..', '..', 'src', 'db', 'migrations', '002_vector.sql'),
+    join(__dirname, 'migrations', MIGRATION),
+    join(__dirname, '..', '..', 'src', 'db', 'migrations', MIGRATION),
   ];
   const migrationPath = candidates.find((p) => existsSync(p));
   if (!migrationPath) {
-    lastError = 'migration file 002_vector.sql not found';
+    lastError = `migration file ${MIGRATION} not found`;
     logger.warn(`[vector] ${lastError}`);
     vectorEnabled = false;
     return false;
   }
 
-  // R2-1 fix (Critic R2): the F7 fingerprint check has to read the OLD
-  // `embedding_model` meta value BEFORE the migration runs, because
-  // 002_vector.sql contains `INSERT OR REPLACE INTO meta (key, value)
-  // VALUES ('embedding_model', 'Xenova/multilingual-e5-small')`. If we read
-  // after, the meta value already equals the runtime default and the drift
-  // signal is gone forever. So we snapshot first, run the migration, then
-  // compare the snapshot to `embedModelId()`.
-  let priorModel: string | null = null;
-  let priorRowCount = 0;
   try {
-    const m = db
-      .prepare("SELECT value FROM meta WHERE key = 'embedding_model'")
-      .get() as { value: string } | undefined;
-    priorModel = m?.value ?? null;
-    // The embeddings table may not exist yet on a v1 DB — defensive count.
-    const tbl = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='embeddings' LIMIT 1")
-      .get();
-    if (tbl) {
-      const c = db.prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number } | undefined;
-      priorRowCount = c?.c ?? 0;
-    }
-  } catch {
-    // Snapshot is best-effort. A failure here just means we won't be able
-    // to warn about drift; the migration itself can still proceed.
-  }
-
-  try {
-    const sql = readFileSync(migrationPath, 'utf-8');
-    db.exec(sql);
+    db.exec(readFileSync(migrationPath, 'utf-8'));
   } catch (err) {
     lastError = err instanceof Error ? err.message : String(err);
     logger.warn(`[vector] schema migration failed: ${lastError}`);
-    // If the migration fails (e.g. an existing DB has a conflicting
-    // embeddings table from an aborted upgrade), disable vec for this run.
     vectorEnabled = false;
     return false;
-  }
-
-  // F7 + R2-1: warn about model drift using the snapshot. Same-dim
-  // cross-model is logged only (cosine still meaningful, just not optimal).
-  // Dim mismatch is enforced by vec0 itself — the embeddings VIRTUAL TABLE
-  // was created with float[EMBEDDING_DIM] so any INSERT of a wrong-length
-  // vector throws SqliteError; `writeEmbeddingSync` lets that propagate.
-  if (priorModel && priorRowCount > 0 && priorModel !== embedModelId()) {
-    logger.warn(
-      `[vector] embedding model fingerprint drift: ${priorRowCount} existing rows were produced with "${priorModel}", runtime model is now "${embedModelId()}". ` +
-        `Cosine similarity may degrade. To rebuild, set MEMORY_EMBED_MODEL back or wipe embeddings: DELETE FROM embeddings.`
-    );
   }
   return true;
 }
@@ -180,254 +130,148 @@ export function vectorStatus(): { enabled: boolean; error: string | null } {
   return { enabled: vectorEnabled, error: lastError };
 }
 
-/**
- * Embedding storage — upsert + cascade helpers.
- *
- * `upsertEmbedding` is the single public write path for vectors. It computes
- * the embedding outside any DB transaction (so the async work doesn't hold
- * write locks), then writes DELETE+INSERT inside one synchronous transaction
- * because vec0 doesn't honour INSERT OR REPLACE on its primary key. The
- * outer caller can wrap this in its own atomic insert+embed transaction to
- * ensure FTS row + embedding row commit together; see `learn.ts`/`decide.ts`/
- * `entity.ts` for the pattern.
- *
- * C1 Refactor (Analyst R1): moved here from `tools/learn.ts` because it is
- * infrastructure shared by three tool modules (`learn`, `decide`,
- * `entityObserve`). Living in the db layer matches the dependency direction
- * `tools/* → db/* → lib/*`.
- *
- * v2.3.0 (entity embedding bugfix): `'entity'` is now a first-class embeddable
- * content type. Earlier releases deliberately excluded it — the reasoning was
- * that an entity row carries only a name+summary while its attached
- * observations hold the semantic surface. But `searchSchema` advertised
- * 'entity' in its `types` enum AND `mode:'vector'` accepted it, so
- * `memory_search({mode:'vector', types:['entity']})` always returned zero — a
- * silent capability lie. We close that by embedding `name + summary` on
- * create/observe (atomic F4 pattern) plus a one-shot boot backfill
- * (`backfillEntityEmbeddings`). Entities stay reachable through their
- * observations too — the entity vector is an additional recall surface, not a
- * replacement.
- *
- * The DB column is still an unconstrained TEXT aux column; the union is the
- * single source of truth for what the tool layer is allowed to write.
- */
 export type EmbeddingContentType = 'learning' | 'decision' | 'observation' | 'entity';
 
-/**
- * @deprecated Since v2.0.0 R2 — prefer `prepareEmbedding` + `writeEmbeddingSync`
- * inside the caller's own `db.transaction()`. This standalone path does the
- * embedding write outside the caller's row INSERT transaction, which makes it
- * impossible to roll back together if anything fails. The helper is kept
- * exported because a small surface of tests still imports it under its old
- * name. New code MUST use the atomic two-step pattern; see learn.ts for the
- * reference implementation.
- */
-export async function upsertEmbedding(
-  contentId: string,
-  contentType: EmbeddingContentType,
-  text: string,
-): Promise<void> {
-  if (!vectorEnabled) return;
-  let vec: Float32Array | null;
-  try {
-    vec = await embed(text);
-  } catch (err) {
-    logger.warn(`[vector] embed() threw for ${contentType}:${contentId}: ${err instanceof Error ? err.message : String(err)}`);
-    return;
-  }
-  if (!vec || vec.length !== EMBEDDING_DIM) return;
-  try {
-    // Dynamic getDb import to avoid a cycle with client.ts (client imports
-    // vector for loadVecExtension; we'd otherwise have a circular import).
-    const { getDb } = await import('./client.js');
-    const db = getDb();
-    const tx = db.transaction(() => {
-      db.prepare('DELETE FROM embeddings WHERE content_id = ?').run(contentId);
-      db.prepare(
-        `INSERT INTO embeddings (content_id, content_type, embedding)
-         VALUES (?, ?, ?)`
-      ).run(contentId, contentType, vec);
-    });
-    tx();
-  } catch (err) {
-    logger.warn(`[vector] embedding upsert failed for ${contentType}:${contentId}: ${err instanceof Error ? err.message : String(err)}`);
-  }
+/** The vectors of one entry's chunks, plus the hash of the text they were made from. */
+export interface PreparedEmbedding {
+  vectors: Float32Array[];
+  hash: string;
 }
 
+const contentHash = (text: string): string => createHash('sha256').update(text).digest('hex');
+
+// Mock vectors are tagged, so switching to the real model re-embeds them.
+const modelTag = (): string => (embedMode() === 'mock' ? `${embedModelId()}#mock` : embedModelId());
+
 /**
- * Two-step atomic write helpers — produce the vector outside any transaction
- * (because embed() is async), then write the embedding row inside the
- * caller's transaction (which is synchronous in better-sqlite3) so the
- * source row insert and the embedding insert commit together.
- *
- * F4 fix (Critic R1): the previous pattern was
- *   db.prepare(INSERT row).run(...)        // commit 1
- *   await upsertEmbedding(id, …)           // separate commit
- * which left an orphan source row if the process crashed in between. The
- * atomic pattern is now:
- *   const vec = await prepareEmbedding(text);     // async, no tx
- *   db.transaction(() => {
- *     db.prepare(INSERT row).run(...);
- *     writeEmbeddingSync(db, id, type, vec);
- *   })();
- * Either both succeed or both roll back. Callers in learn.ts / decide.ts /
- * entity.ts use this shape.
+ * Chunk and embed a text outside any transaction; null when vectors are off or any chunk failed to embed.
+ * Chunks are embedded one by one: batches padded to the longest chunk were slower (39 vs 92 ms per chunk measured).
  */
-export async function prepareEmbedding(text: string): Promise<Float32Array | null> {
+export async function prepareEmbedding(text: string): Promise<PreparedEmbedding | null> {
   if (!vectorEnabled) return null;
-  try {
-    const vec = await embed(text);
+  const chunks = chunkText(text, await passageTokenCounter());
+  const vectors: Float32Array[] = [];
+  for (const chunk of chunks) {
+    const vec = await embed(chunk);
     if (!vec || vec.length !== EMBEDDING_DIM) return null;
-    return vec;
-  } catch (err) {
-    logger.warn(`[vector] prepareEmbedding failed: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
+    vectors.push(vec);
   }
+  return { vectors, hash: contentHash(text) };
+}
+
+export async function prepareEmbeddingBatch(texts: string[]): Promise<(PreparedEmbedding | null)[]> {
+  const out: (PreparedEmbedding | null)[] = [];
+  for (const text of texts) out.push(await prepareEmbedding(text));
+  return out;
+}
+
+function deleteChunks(db: Database, contentId: string): void {
+  const source = db.prepare('SELECT chunk_count FROM embedding_sources WHERE content_id = ?').get(contentId) as
+    | { chunk_count: number }
+    | undefined;
+  if (!source) return;
+  const del = db.prepare('DELETE FROM embedding_chunks WHERE chunk_id = ?');
+  for (let i = 0; i < source.chunk_count; i++) del.run(`${contentId}:${i}`);
+  db.prepare('DELETE FROM embedding_sources WHERE content_id = ?').run(contentId);
 }
 
 /**
- * Batch variant of prepareEmbedding (v2.2.0). Returns a result array the same
- * length as `texts` (each a 384-dim Float32Array or null), computed in ONE
- * model forward pass via embedBatch. No-op fast path returns all-null when vec
- * isn't loaded, so a caller never wastes inference on a DB that can't store
- * the vectors. Used by memory_learn_bulk + memory_import.
- */
-export async function prepareEmbeddingBatch(texts: string[]): Promise<(Float32Array | null)[]> {
-  if (!vectorEnabled || texts.length === 0) return texts.map(() => null);
-  try {
-    const vecs = await embedBatch(texts);
-    return vecs.map((v) => (v && v.length === EMBEDDING_DIM ? v : null));
-  } catch (err) {
-    logger.warn(`[vector] prepareEmbeddingBatch failed: ${err instanceof Error ? err.message : String(err)}`);
-    return texts.map(() => null);
-  }
-}
-
-/**
- * Write a precomputed embedding to the vec0 table, inside the caller's
- * transaction. Strict atomicity: any SqliteError thrown by vec0 (busy lock,
- * dim mismatch, full disk) propagates out so the enclosing `db.transaction`
- * wrapper rolls back the source-row INSERT too. The caller (learn.ts /
- * decide.ts / entity.ts) does NOT catch this — a failed embedding write is
- * treated as a failed write, period.
- *
- * R2-5 fix (Critic R2): the previous version caught the error and emitted a
- * `logger.warn`. That left the outer transaction unaware, the source row
- * committed, and the embedding silently absent. That broke the F4 atomicity
- * guarantee in the error path. Now the error propagates and the whole
- * write rolls back.
- *
- * Behaviour summary:
- *   - `vectorEnabled === false` → no-op (vec not loaded on this platform).
- *   - `vec === null` → no-op (caller decided not to embed this row).
- *   - SQLite error during DELETE or INSERT → thrown, transaction rolls back.
+ * Replace an entry's chunks inside the caller's transaction; a vec0 error propagates so the source row rolls back too.
+ * No-op when vectors are off or `prepared` is null (the entry stays FTS-only).
  */
 export function writeEmbeddingSync(
   db: Database,
   contentId: string,
   contentType: EmbeddingContentType,
-  vec: Float32Array | null,
+  prepared: PreparedEmbedding | null,
 ): void {
-  if (!vectorEnabled || !vec) return;
-  db.prepare('DELETE FROM embeddings WHERE content_id = ?').run(contentId);
+  if (!vectorEnabled || !prepared) return;
+  deleteChunks(db, contentId);
+  const insert = db.prepare('INSERT INTO embedding_chunks (chunk_id, embedding) VALUES (?, ?)');
+  prepared.vectors.forEach((vec, i) => insert.run(`${contentId}:${i}`, vec));
   db.prepare(
-    `INSERT INTO embeddings (content_id, content_type, embedding)
-     VALUES (?, ?, ?)`
-  ).run(contentId, contentType, vec);
+    `INSERT INTO embedding_sources (content_id, content_type, chunk_count, source_hash, chunker, model)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(contentId, contentType, prepared.vectors.length, prepared.hash, CHUNKER_ID, modelTag());
 }
 
-/**
- * Cascade delete embeddings whose content_id matches any of the given ids.
- * Used by entity delete paths so vector-only ghost rows don't accumulate
- * after an entity (and its observations) are removed.
- *
- * F3 fix (Critic R1): observations were previously deleted from the source
- * table without their embedding rows being cleaned up. Over time those ghost
- * embeddings were unreachable via FTS join but still consumed disk + index
- * slots. This helper closes the leak.
- *
- * Safe no-op when vec isn't enabled.
- */
+/** Delete the chunks of source rows that are being deleted; vec0 is not part of the foreign-key cascade. */
 export function deleteEmbeddings(contentIds: string[], db: Database): void {
-  if (!vectorEnabled || contentIds.length === 0) return;
-  try {
-    const placeholders = contentIds.map(() => '?').join(',');
-    db.prepare(`DELETE FROM embeddings WHERE content_id IN (${placeholders})`).run(...contentIds);
-  } catch (err) {
-    logger.warn(`[vector] cascade delete failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  if (!vectorEnabled) return;
+  for (const id of contentIds) deleteChunks(db, id);
 }
 
-/**
- * Build the canonical embeddable text for an entity (v2.3.0). Mirrors the
- * surface the FTS5 `entities_*` triggers index: name as the title, then the
- * summary plus the entity_type. Concatenated into one passage so the vector
- * captures the same signal a text query would hit. Exported so the create /
- * observe write paths and the backfill all derive the string identically —
- * one source of truth for "what an entity embeds to".
- */
+/** The text an entity embeds to, shared by the write paths and the backfill. */
 export function entityEmbedText(name: string, summary: string | null, entityType: string): string {
   return `${name} ${summary ?? ''} ${entityType}`.trim();
 }
 
-/**
- * One-shot boot backfill for entity embeddings (v2.3.0 entity-embedding fix).
- *
- * Pre-v2.3.0 entities were never embedded, so on an existing user DB every
- * entity row is missing from `embeddings` and `memory_search({mode:'vector',
- * types:['entity']})` returns nothing for them. New writes embed inline; this
- * closes the gap for rows created before the upgrade.
- *
- * Idempotent + cheap: it only touches entities with NO embeddings row, so on a
- * fully-backfilled DB the candidate query returns zero and we no-op. Embeddings
- * are computed in one batched forward pass (`prepareEmbeddingBatch`) and written
- * inside a single transaction. A failure to embed a given row leaves it without
- * a vector (it stays FTS-searchable) and the next boot retries it — same
- * graceful-degradation contract as the rest of the embed layer. We cap the
- * batch so a huge legacy store doesn't block boot; the remainder is picked up on
- * subsequent boots.
- *
- * Returns the number of entities embedded in this pass.
- */
-export async function backfillEntityEmbeddings(db: Database, maxBatch = 500): Promise<number> {
-  if (!vectorEnabled) return 0;
-  let pending: Array<{ id: string; name: string; summary: string | null; entity_type: string }>;
-  try {
-    pending = db
-      .prepare(
-        `SELECT e.id, e.name, e.summary, e.entity_type
-         FROM entities e
-         LEFT JOIN embeddings em ON em.content_id = e.id
-         WHERE em.content_id IS NULL
-         LIMIT ?`
-      )
-      .all(maxBatch) as Array<{ id: string; name: string; summary: string | null; entity_type: string }>;
-  } catch (err) {
-    logger.warn(`[vector] entity backfill scan failed: ${err instanceof Error ? err.message : String(err)}`);
-    return 0;
-  }
-  if (pending.length === 0) return 0;
+/** The text a decision embeds to, shared by decide, import and the backfill so a round trip keeps its vectors. */
+export function decisionEmbeddingText(d: {
+  title?: unknown;
+  decision?: unknown;
+  reasoning?: unknown;
+  alternatives?: unknown;
+}): string {
+  return [d.title, d.decision, d.reasoning, d.alternatives]
+    .map((x) => (typeof x === 'string' ? x : ''))
+    .filter(Boolean)
+    .join('\n');
+}
 
-  const vecs = await prepareEmbeddingBatch(
-    pending.map((e) => entityEmbedText(e.name, e.summary, e.entity_type))
+interface Embeddable {
+  id: string;
+  type: EmbeddingContentType;
+  text: string;
+}
+
+function embeddables(db: Database, id?: string): Embeddable[] {
+  const where = id === undefined ? '' : 'WHERE id = ?';
+  const args = id === undefined ? [] : [id];
+  const learnings = (db.prepare(`SELECT id, content FROM learnings ${where}`).all(...args) as Array<{ id: string; content: string }>)
+    .map((r): Embeddable => ({ id: r.id, type: 'learning', text: r.content }));
+  const decisions = (db.prepare(`SELECT id, title, decision, reasoning, alternatives FROM decisions ${where}`).all(...args) as Array<{ id: string; title: string; decision: string; reasoning: string; alternatives: string | null }>)
+    .map((r): Embeddable => ({ id: r.id, type: 'decision', text: decisionEmbeddingText(r) }));
+  const observations = (db.prepare(`SELECT id, content FROM entity_observations ${where}`).all(...args) as Array<{ id: string; content: string }>)
+    .map((r): Embeddable => ({ id: r.id, type: 'observation', text: r.content }));
+  const entities = (db.prepare(`SELECT id, name, summary, entity_type FROM entities ${where}`).all(...args) as Array<{ id: string; name: string; summary: string | null; entity_type: string }>)
+    .map((r): Embeddable => ({ id: r.id, type: 'entity', text: entityEmbedText(r.name, r.summary, r.entity_type) }));
+  return [...learnings, ...decisions, ...observations, ...entities];
+}
+
+/**
+ * Embed every entry whose vectors are missing or were made from other text, another chunker or another model.
+ * Runs in the background after boot; each entry commits alone, and one changed meanwhile is left to its own write.
+ */
+export async function backfillEmbeddings(db: Database): Promise<number> {
+  if (!vectorEnabled) return 0;
+  const sources = new Map(
+    (db.prepare('SELECT content_id, source_hash, chunker, model FROM embedding_sources').all() as Array<{
+      content_id: string;
+      source_hash: string;
+      chunker: string;
+      model: string;
+    }>).map((s) => [s.content_id, s])
   );
+  const model = modelTag();
+  const stale = embeddables(db).filter((e) => {
+    const s = sources.get(e.id);
+    return !s || s.source_hash !== contentHash(e.text) || s.chunker !== CHUNKER_ID || s.model !== model;
+  });
 
   let written = 0;
-  try {
+  for (const entry of stale) {
+    const prepared = await prepareEmbedding(entry.text);
+    if (!prepared) continue;
     const tx = db.transaction(() => {
-      for (let i = 0; i < pending.length; i++) {
-        const vec = vecs[i];
-        if (!vec) continue;
-        writeEmbeddingSync(db, pending[i]!.id, 'entity', vec);
-        written++;
-      }
+      const [current] = embeddables(db, entry.id).filter((e) => e.type === entry.type);
+      if (!current || contentHash(current.text) !== prepared.hash) return false;
+      writeEmbeddingSync(db, entry.id, entry.type, prepared);
+      return true;
     });
-    tx();
-  } catch (err) {
-    logger.warn(`[vector] entity backfill write failed: ${err instanceof Error ? err.message : String(err)}`);
-    return 0;
+    if (tx()) written++;
   }
-  if (written > 0) logger.info(`[vector] backfilled ${written} entity embedding(s)`);
+  if (written > 0) logger.info(`[vector] embedded ${written} entr${written === 1 ? 'y' : 'ies'}`);
   return written;
 }
 

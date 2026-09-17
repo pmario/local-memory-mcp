@@ -176,7 +176,7 @@ describe('learn gatekeeper', () => {
       expect(originalAfter).toEqual(originalBefore);
 
       if (isVectorEnabled()) {
-        const eCount = (db.prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c;
+        const eCount = (db.prepare('SELECT COUNT(*) AS c FROM embedding_sources').get() as { c: number }).c;
         expect(eCount).toBeGreaterThanOrEqual(filler.length + 2);
       }
     }
@@ -429,7 +429,7 @@ describe('learn_update', () => {
 
     if (isVectorEnabled()) {
       const e = getDb()
-        .prepare('SELECT content_id FROM embeddings WHERE content_id = ?')
+        .prepare('SELECT content_id FROM embedding_sources WHERE content_id = ?')
         .get(id) as { content_id: string } | undefined;
       expect(e).toBeDefined();
     }

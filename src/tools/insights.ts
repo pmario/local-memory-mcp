@@ -75,18 +75,11 @@ export function health(): ToolResult {
   const sizeBytes = pageCount * pageSize;
 
   // v2.0.0+: surface vector + embedding status so users can see whether
-  // hybrid mode is live or we're running FTS5-only. embeddingsCount is
-  // pulled defensively — if the virtual table doesn't exist we report 0.
+  // hybrid mode is live or we're running FTS5-only. The tables exist whenever vectors are enabled.
   const vec = vectorStatus();
-  let embeddingsCount = 0;
-  if (vec.enabled) {
-    try {
-      const row = db.prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number } | undefined;
-      embeddingsCount = row?.c ?? 0;
-    } catch {
-      embeddingsCount = 0;
-    }
-  }
+  const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
+  const embeddingsCount = vec.enabled ? count('embedding_sources') : 0;
+  const chunksCount = vec.enabled ? count('embedding_chunks') : 0;
 
   return {
     success: true,
@@ -100,6 +93,7 @@ export function health(): ToolResult {
         enabled: vec.enabled,
         error: vec.error,
         embeddingsCount,
+        chunksCount,
         dim: EMBEDDING_DIM,
       },
       embedding: {

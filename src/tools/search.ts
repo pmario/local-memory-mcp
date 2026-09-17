@@ -229,15 +229,18 @@ function ftsSearch(
   return db.prepare(sql).all(...args) as SearchRow[];
 }
 
+// Entries with more chunks get more chances to match; this per-ln(chunk count) offset kept short entries' recall on a 453-entry store.
+const CHUNK_COUNT_PENALTY = 0.01;
+
 /**
- * Pull top-K rows from the sqlite-vec embeddings table by cosine distance.
+ * Pull top-K entries from the sqlite-vec chunk table, each scored by its best chunk.
  * Only used when vector mode is requested or as the second leg of hybrid.
  * Joins back to FTS5 to recover title/body for the response payload.
  *
  * KNN constraint reality: sqlite-vec's vec0 module rejects WHERE constraints
  * on auxiliary columns inside a KNN query — only the partition-key columns
- * are accepted in the same WHERE that holds `embedding MATCH ?`. We model
- * `content_type` as an aux column so we can't filter on it inline. Instead
+ * are accepted in the same WHERE that holds `embedding MATCH ?`, and the chunk
+ * table carries no content type at all. Instead
  * we (1) over-fetch the raw KNN result into a CTE, (2) join through
  * `search_fts` to recover content_type + title + body, (3) apply the
  * type-filter + archived-learnings filter in the outer query, and (4)
@@ -256,10 +259,9 @@ function vectorSearch(
 ): SearchRow[] {
   const db = getDb();
 
-  // Over-fetch headroom for the post-filter step. 4× the target with a 200
-  // cap keeps the work bounded on large DBs while leaving enough room to
-  // recover from a heavy `types` filter.
-  const overFetch = Math.min(Math.max(limit * 4, 50), 200);
+  // Over-fetch headroom for the post-filter step, three times the entry-level
+  // amount because the KNN ranks chunks and an entry has several.
+  const overFetch = Math.min(Math.max(limit * 12, 150), 600);
 
   // C7 cleanup (Analyst R1): build the WHERE clause directly with the outer
   // alias `sfts.content_type` instead of building it for `vr.content_type`
@@ -285,12 +287,22 @@ function vectorSearch(
   const scopeRaw = buildScopeClause(project, tags);
   const scopeClause = scopeRaw.clause.replace(/search_fts\./g, 'sfts.');
 
+  // vec0 returns L2 distance, which for unit vectors is sqrt(2 * cosine distance). The chunk id's
+  // trailing `:<n>` is stripped with rtrim, so any content id works.
   const sql = `
-    WITH vec_raw AS (
-      SELECT content_id, distance
-      FROM embeddings
+    WITH chunk_hits AS (
+      SELECT chunk_id, distance
+      FROM embedding_chunks
       WHERE embedding MATCH ?
         AND k = ?
+    ),
+    vec_raw AS (
+      SELECT src.content_id AS content_id,
+             MIN(ch.distance) * MIN(ch.distance) / 2 + ? * ln(src.chunk_count) AS distance
+      FROM chunk_hits ch
+      JOIN embedding_sources src
+        ON src.content_id = substr(rtrim(ch.chunk_id, '0123456789'), 1, length(rtrim(ch.chunk_id, '0123456789')) - 1)
+      GROUP BY src.content_id
     )
     SELECT vr.content_id AS id,
            sfts.content_type AS type,
@@ -324,7 +336,7 @@ function vectorSearch(
     LIMIT ?
   `;
 
-  const args: unknown[] = [vector, overFetch];
+  const args: unknown[] = [vector, overFetch, CHUNK_COUNT_PENALTY];
   if (types && types.length > 0) args.push(...types);
   args.push(...scopeRaw.args);
   args.push(limit);

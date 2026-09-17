@@ -66,7 +66,7 @@ describe('entity embedding — vector search over entities (the bugfix)', () => 
     const id = (created.data as { id: string }).id;
 
     const cnt = (getDb()
-      .prepare("SELECT COUNT(*) AS c FROM embeddings WHERE content_id = ? AND content_type = 'entity'")
+      .prepare("SELECT COUNT(*) AS c FROM embedding_sources WHERE content_id = ? AND content_type = 'entity'")
       .get(id) as { c: number }).c;
     expect(cnt).toBe(1);
   });
@@ -83,7 +83,7 @@ describe('entity embedding — vector search over entities (the bugfix)', () => 
 
     // The auto-created entity has its own embedding row.
     const cnt = (getDb()
-      .prepare("SELECT COUNT(*) AS c FROM embeddings WHERE content_id = ? AND content_type = 'entity'")
+      .prepare("SELECT COUNT(*) AS c FROM embedding_sources WHERE content_id = ? AND content_type = 'entity'")
       .get(entityId) as { c: number }).c;
     expect(cnt).toBe(1);
   });
@@ -107,13 +107,7 @@ describe('entity embedding — vector search over entities (the bugfix)', () => 
     badVec[0] = 1;
 
     const before = (getDb().prepare('SELECT COUNT(*) AS c FROM entities').get() as { c: number }).c;
-    let threw = false;
-    try {
-      entityCreateInternalForTest({ name: 'Phobos', entityType: 'moon' }, badVec);
-    } catch {
-      threw = true;
-    }
-    expect(threw).toBe(true);
+    expect(() => entityCreateInternalForTest({ name: 'Phobos', entityType: 'moon' }, { vectors: [badVec], hash: 'test' })).toThrow(/dimension/i);
     const after = (getDb().prepare('SELECT COUNT(*) AS c FROM entities').get() as { c: number }).c;
     // Row count unchanged → the entity INSERT rolled back with the bad embedding.
     expect(after).toBe(before);
@@ -143,9 +137,9 @@ describe('entity embedding — vector search over entities (the bugfix)', () => 
     }
   });
 
-  it('backfillEntityEmbeddings embeds legacy entity rows created without a vector', async () => {
+  it('backfillEmbeddings embeds legacy entity rows created without a vector', async () => {
     const { entityCreate } = await import('./entity.js');
-    const { backfillEntityEmbeddings, isVectorEnabled } = await import('../db/vector.js');
+    const { backfillEmbeddings, isVectorEnabled } = await import('../db/vector.js');
     const { getDb } = await import('../db/client.js');
     if (!isVectorEnabled()) return;
 
@@ -156,20 +150,20 @@ describe('entity embedding — vector search over entities (the bugfix)', () => 
     const id = (created.data as { id: string }).id;
 
     const before = (getDb()
-      .prepare("SELECT COUNT(*) AS c FROM embeddings WHERE content_id = ?")
+      .prepare("SELECT COUNT(*) AS c FROM embedding_sources WHERE content_id = ?")
       .get(id) as { c: number }).c;
     expect(before).toBe(0);
 
-    const n = await backfillEntityEmbeddings(getDb());
+    const n = await backfillEmbeddings(getDb());
     expect(n).toBeGreaterThanOrEqual(1);
 
     const after = (getDb()
-      .prepare("SELECT COUNT(*) AS c FROM embeddings WHERE content_id = ? AND content_type = 'entity'")
+      .prepare("SELECT COUNT(*) AS c FROM embedding_sources WHERE content_id = ? AND content_type = 'entity'")
       .get(id) as { c: number }).c;
     expect(after).toBe(1);
 
     // A second backfill is a no-op (idempotent) — the row already has a vector.
-    const n2 = await backfillEntityEmbeddings(getDb());
+    const n2 = await backfillEmbeddings(getDb());
     expect(n2).toBe(0);
   });
 });

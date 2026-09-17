@@ -575,7 +575,7 @@ describe('memory_import', () => {
     });
     // The old guards embedded first and skipped afterwards, so a 50k field was
     // paid for in inference before being thrown away.
-    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c;
+    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM embedding_sources').get() as { c: number }).c;
     expect(count).toBe(0);
   });
 
@@ -734,7 +734,7 @@ describe('memory_import', () => {
     await memoryImport({ data: exp.data as Record<string, unknown> });
 
     // 1 learning + 1 decision + 1 observation = 3 embeddable rows.
-    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c;
+    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM embedding_sources').get() as { c: number }).c;
     expect(count).toBe(3);
   });
 });

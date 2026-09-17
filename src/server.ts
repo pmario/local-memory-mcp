@@ -24,6 +24,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from './lib/logger.js';
 import { closeDb, getDb } from './db/client.js';
+import { backfillEmbeddings } from './db/vector.js';
 import { getHandler, toMcpToolList, TOOLS } from './tools/registry.js';
 import { INSTRUCTIONS } from './instructions.js';
 
@@ -71,23 +72,9 @@ async function main(): Promise<void> {
 
   // Bootstrap the DB early so any schema errors surface before we announce ready.
   try {
-    const db = getDb();
+    getDb();
     logger.info('Database ready');
     process.stderr.write('[local-memory] database ready\n');
-    // v2.3.0 entity-embedding backfill: existing DBs created before entities
-    // were embeddable have entity rows with no vector, so vector/hybrid search
-    // over entities misses them. Run a one-shot, idempotent, best-effort
-    // backfill at boot — it no-ops on a fully-backfilled DB and never blocks
-    // startup (a failure just leaves rows FTS-only, retried next boot).
-    try {
-      const { isVectorEnabled, backfillEntityEmbeddings } = await import('./db/vector.js');
-      if (isVectorEnabled()) {
-        const n = await backfillEntityEmbeddings(db);
-        if (n > 0) process.stderr.write(`[local-memory] backfilled ${n} entity embedding(s)\n`);
-      }
-    } catch (err) {
-      logger.warn(`[local-memory] entity embedding backfill skipped: ${err instanceof Error ? err.message : String(err)}`);
-    }
   } catch (err) {
     logger.logError('Database init failed', err);
     process.stderr.write('[local-memory] database init failed: ' + (err instanceof Error ? err.stack ?? err.message : String(err)) + '\n');
@@ -156,6 +143,14 @@ async function main(): Promise<void> {
 
   logger.info(`${TOOLS.length} tools registered (stdio)`);
   process.stderr.write('[local-memory] ready — ' + TOOLS.length + ' tools on stdio\n');
+
+  // Re-embedding a whole store takes minutes, so it runs after the handshake; until then vector search lacks those entries.
+  backfillEmbeddings(getDb()).then(
+    (n) => {
+      if (n > 0) process.stderr.write(`[local-memory] embedded ${n} entries in the background\n`);
+    },
+    (err) => logger.logError('Background embedding failed; the next boot retries it', err)
+  );
 }
 
 // Catch ANY unhandled error that could silently kill us — Claude Desktop

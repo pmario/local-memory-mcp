@@ -1,5 +1,5 @@
 /**
- * Tests for the sqlite-vec loader + embeddings virtual table.
+ * Tests for the sqlite-vec loader + embedding_chunks virtual table.
  *
  * These exercise the full path getDb → loadVecExtension → applyVectorSchema
  * against a real tmp SQLite file so the integration that broke in early
@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe('sqlite-vec loader', () => {
-  it('loads on supported platforms and exposes the embeddings table', async () => {
+  it('loads on supported platforms and exposes the embedding_chunks table', async () => {
     const { getDb } = await import('./client.js');
     const { isVectorEnabled } = await import('./vector.js');
     const db = getDb();
@@ -45,7 +45,7 @@ describe('sqlite-vec loader', () => {
     // The vec0 virtual table appears as the user-facing name plus a couple of
     // shadow tables (_rowids, _chunks). Existence of at least one of them
     // proves the migration ran.
-    expect(tables.some((t) => t.name.startsWith('embeddings'))).toBe(true);
+    expect(tables.some((t) => t.name.startsWith('embedding_chunks'))).toBe(true);
   });
 
   it('vectorStatus reports enabled=true and clears any stale error', async () => {
@@ -75,7 +75,7 @@ describe('sqlite-vec loader', () => {
   });
 });
 
-describe('embeddings VIRTUAL TABLE', () => {
+describe('embedding_chunks VIRTUAL TABLE', () => {
   it('accepts INSERT + KNN MATCH against a Float32Array vector', async () => {
     const { getDb } = await import('./client.js');
     const { isVectorEnabled } = await import('./vector.js');
@@ -83,65 +83,56 @@ describe('embeddings VIRTUAL TABLE', () => {
     const db = getDb();
     if (!isVectorEnabled()) return;
 
-    const v1 = mockEmbed('banana yellow fruit');
-    const v2 = mockEmbed('apple red fruit');
-    const v3 = mockEmbed('mediterranean diet olive oil');
-    db.prepare('INSERT INTO embeddings (content_id, content_type, embedding) VALUES (?, ?, ?)').run('a', 'learning', v1);
-    db.prepare('INSERT INTO embeddings (content_id, content_type, embedding) VALUES (?, ?, ?)').run('b', 'learning', v2);
-    db.prepare('INSERT INTO embeddings (content_id, content_type, embedding) VALUES (?, ?, ?)').run('c', 'learning', v3);
+    const insert = db.prepare('INSERT INTO embedding_chunks (chunk_id, embedding) VALUES (?, ?)');
+    insert.run('a:0', mockEmbed('banana yellow fruit'));
+    insert.run('b:0', mockEmbed('apple red fruit'));
+    insert.run('c:0', mockEmbed('mediterranean diet olive oil'));
 
     // KNN MATCH against the banana vector should rank banana itself first,
     // apple second (shares "fruit"), and the olive-oil row last.
     const rows = db.prepare(`
-      SELECT content_id, distance
-      FROM embeddings
+      SELECT chunk_id, distance
+      FROM embedding_chunks
       WHERE embedding MATCH ? AND k = 3
       ORDER BY distance
-    `).all(mockEmbed('banana yellow fruit')) as Array<{ content_id: string; distance: number }>;
+    `).all(mockEmbed('banana yellow fruit')) as Array<{ chunk_id: string; distance: number }>;
 
     expect(rows.length).toBe(3);
-    expect(rows[0]?.content_id).toBe('a');
+    expect(rows[0]?.chunk_id).toBe('a:0');
     // The other two can flip but both must rank behind the self-match.
     expect(rows[0]?.distance).toBeLessThan(rows[1]?.distance ?? 0);
   });
 
-  it('DELETE-then-INSERT replaces a vector keyed on content_id', async () => {
-    // vec0 doesn't honour INSERT OR REPLACE on its PRIMARY KEY, so we model
-    // upsert with an explicit DELETE+INSERT pair (see upsertEmbedding in
-    // src/tools/learn.ts). This test pins that contract.
+  it('DELETE-then-INSERT replaces a vector keyed on chunk_id', async () => {
+    // vec0 doesn't honour INSERT OR REPLACE on its PRIMARY KEY, so writeEmbeddingSync
+    // deletes before it inserts. This test pins that contract.
     const { getDb } = await import('./client.js');
     const { isVectorEnabled } = await import('./vector.js');
     const { mockEmbed } = await import('../lib/embed.js');
     const db = getDb();
     if (!isVectorEnabled()) return;
 
-    db.prepare('INSERT INTO embeddings (content_id, content_type, embedding) VALUES (?, ?, ?)').run(
-      'x', 'learning', mockEmbed('first version of this learning')
-    );
-    db.prepare('DELETE FROM embeddings WHERE content_id = ?').run('x');
-    db.prepare('INSERT INTO embeddings (content_id, content_type, embedding) VALUES (?, ?, ?)').run(
-      'x', 'learning', mockEmbed('updated text replaces the old vector')
-    );
-    const count = (db.prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c;
+    db.prepare('INSERT INTO embedding_chunks (chunk_id, embedding) VALUES (?, ?)').run('x:0', mockEmbed('first version of this learning'));
+    db.prepare('DELETE FROM embedding_chunks WHERE chunk_id = ?').run('x:0');
+    db.prepare('INSERT INTO embedding_chunks (chunk_id, embedding) VALUES (?, ?)').run('x:0', mockEmbed('updated text replaces the old vector'));
+    const count = (db.prepare('SELECT COUNT(*) AS c FROM embedding_chunks').get() as { c: number }).c;
     expect(count).toBe(1);
   });
 
-  it('upsertEmbedding survives being called twice on the same content_id', async () => {
-    // Direct regression guard for the gatekeeper's "updated_similar" branch
-    // in learn.ts — that branch can re-embed the same learning id with new
-    // text. Without the DELETE-first upsert, the second call would throw
-    // SqliteError: UNIQUE constraint failed.
+  it('writeEmbeddingSync survives being called twice on the same content_id', async () => {
+    // Re-embedding an id (memory_learn_update, the backfill) must replace its chunks, not collide on the primary key.
     const { getDb } = await import('./client.js');
-    const { isVectorEnabled } = await import('./vector.js');
-    const { upsertEmbedding } = await import('../tools/learn.js');
+    const { isVectorEnabled, prepareEmbedding, writeEmbeddingSync } = await import('./vector.js');
     const db = getDb();
     if (!isVectorEnabled()) return;
 
-    await upsertEmbedding('upsert-id', 'learning', 'first version of the content');
-    await upsertEmbedding('upsert-id', 'learning', 'second version replaces the first');
+    writeEmbeddingSync(db, 'upsert-id', 'learning', await prepareEmbedding('first version of the content'));
+    writeEmbeddingSync(db, 'upsert-id', 'learning', await prepareEmbedding('second version replaces the first'));
 
-    const rows = db.prepare('SELECT content_id FROM embeddings WHERE content_id = ?').all('upsert-id') as Array<{ content_id: string }>;
+    const rows = db.prepare('SELECT content_id FROM embedding_sources WHERE content_id = ?').all('upsert-id') as Array<{ content_id: string }>;
     expect(rows.length).toBe(1);
+    const chunks = (db.prepare('SELECT chunk_id FROM embedding_chunks').all() as Array<{ chunk_id: string }>).map((r) => r.chunk_id);
+    expect(chunks).toEqual(['upsert-id:0']);
   });
 
   it('R2-5 fix: writeEmbeddingSync error rolls back the source-row INSERT (atomicity)', async () => {
@@ -165,12 +156,11 @@ describe('embeddings VIRTUAL TABLE', () => {
          (id, date, category, content, project, tags_json, confidence, source, memory_type)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run('atomic-fail-id', new Date().toISOString(), 'pattern', 'should rollback', null, '[]', 0.7, null, 'semantic');
-      // The cast through unknown silences the static-type guard so we can
-      // exercise the runtime invariant — vec0 enforces dim at INSERT time.
-      writeEmbeddingSync(db, 'atomic-fail-id', 'learning', wrongDimVec as unknown as Float32Array);
+      // vec0 enforces the dimension at INSERT time; the hash is irrelevant here.
+      writeEmbeddingSync(db, 'atomic-fail-id', 'learning', { vectors: [wrongDimVec], hash: 'test' });
     });
 
-    expect(() => tx()).toThrow();
+    expect(() => tx()).toThrow(/dimension/i);
 
     // Source row was rolled back — F4 atomicity invariant holds.
     const orphan = db

@@ -12,7 +12,7 @@
  */
 import { z } from 'zod';
 import { getDb, newId, nowIso, escapeFtsQuery } from '../db/client.js';
-import { prepareEmbedding, writeEmbeddingSync, deleteEmbeddings, entityEmbedText } from '../db/vector.js';
+import { prepareEmbedding, writeEmbeddingSync, deleteEmbeddings, entityEmbedText, type PreparedEmbedding } from '../db/vector.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── entity_create ───────────────────────────────────
@@ -37,7 +37,7 @@ export const entityCreateSchema = z.object({
 // because the summary is part of the embedded surface.
 function entityCreateInternal(
   input: z.infer<typeof entityCreateSchema>,
-  vec: Float32Array | null,
+  vec: PreparedEmbedding | null,
 ): ToolResult {
   const db = getDb();
 
@@ -117,7 +117,7 @@ export async function entityCreateEmbedded(input: z.infer<typeof entityCreateSch
  */
 export function entityCreateInternalForTest(
   input: z.infer<typeof entityCreateSchema>,
-  vec: Float32Array | null,
+  vec: PreparedEmbedding | null,
 ): ToolResult {
   return entityCreateInternal(input, vec);
 }

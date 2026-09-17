@@ -96,14 +96,14 @@ describe('memory_learn_bulk', () => {
     const { isVectorEnabled } = await import('../db/vector.js');
     if (!isVectorEnabled()) return;
 
-    const before = (getDb().prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c;
+    const before = (getDb().prepare('SELECT COUNT(*) AS c FROM embedding_sources').get() as { c: number }).c;
     await learnBulk({
       items: [
         { category: 'pattern' as const, content: 'embed on insert keeps recall warm' },
         { category: 'pattern' as const, content: 'atomic transaction wraps row plus vector' },
       ],
     });
-    const after = (getDb().prepare('SELECT COUNT(*) AS c FROM embeddings').get() as { c: number }).c;
+    const after = (getDb().prepare('SELECT COUNT(*) AS c FROM embedding_sources').get() as { c: number }).c;
     expect(after - before).toBe(2);
   });
 

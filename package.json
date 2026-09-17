@@ -14,7 +14,7 @@
   "files": [
     "dist",
     "dist/db/schema.sql",
-    "dist/db/migrations/002_vector.sql",
+    "dist/db/migrations/003_chunked_embeddings.sql",
     "README.md",
     "LICENSE"
   ],

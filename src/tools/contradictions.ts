@@ -191,7 +191,7 @@ export function contradictions(input: z.infer<typeof contradictionsSchema>): Too
                ORDER BY datetime(o.valid_from) DESC, o.id DESC
              ) AS rn
       FROM entity_observations o
-      JOIN embeddings em ON em.content_id = o.id
+      JOIN embedding_chunks em ON em.chunk_id = o.id || ':0'
       ${scopeFilter ? scopeFilter + ' AND o.valid_to IS NULL' : 'WHERE o.valid_to IS NULL'}
     ),
     capped AS (

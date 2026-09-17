@@ -29,8 +29,7 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { getDb, nowIso } from '../db/client.js';
-import { prepareEmbeddingBatch, writeEmbeddingSync } from '../db/vector.js';
-import { decisionEmbeddingText } from './decide.js';
+import { decisionEmbeddingText, prepareEmbeddingBatch, writeEmbeddingSync, type PreparedEmbedding } from '../db/vector.js';
 import { LEARNING_CATEGORIES } from './learn.js';
 import { logger } from '../lib/logger.js';
 import type { ToolResult, LearningCategory } from '../lib/types.js';
@@ -565,9 +564,9 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
   // reasoning+alternatives) so a round-tripped decision keeps its native vector.
   for (const d of validDecisions) if (d) embedJobs.push({ id: d.id, text: decisionEmbeddingText(d) });
   for (const o of validObservations) if (o) embedJobs.push({ id: o.id, text: o.content });
-  // One batched forward pass for the whole import (embedBatch), not N calls.
+  // Every text is chunked and embedded here, before the transaction takes the write lock.
   const vecResults = await prepareEmbeddingBatch(embedJobs.map((j) => j.text));
-  const vecMap = new Map<string, Float32Array | null>();
+  const vecMap = new Map<string, PreparedEmbedding | null>();
   embedJobs.forEach((j, i) => vecMap.set(j.id, vecResults[i] ?? null));
 
   // Best-effort embedding writes during import: unlike a single learn()/decide()

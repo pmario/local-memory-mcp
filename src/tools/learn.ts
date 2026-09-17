@@ -20,14 +20,9 @@
  */
 import { z } from 'zod';
 import { getDb, newId, nowIso, escapeFtsQuery } from '../db/client.js';
-import { prepareEmbedding, prepareEmbeddingBatch, writeEmbeddingSync, deleteEmbeddings, upsertEmbedding } from '../db/vector.js';
+import { prepareEmbedding, prepareEmbeddingBatch, writeEmbeddingSync, deleteEmbeddings, type PreparedEmbedding } from '../db/vector.js';
 import { headline } from '../lib/brief.js';
 import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
-
-// Re-export upsertEmbedding so existing test imports (`from './learn.js'`)
-// keep working. The canonical home is `db/vector.ts` (C1 refactor from
-// Analyst R1) — this alias prevents test churn for the rename.
-export { upsertEmbedding };
 
 // Exported so memory_import can validate against the SAME set the interactive
 // tools enforce (#29) — one list, not a second copy that drifts.
@@ -389,7 +384,7 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
   // Phase 2 (async): embed ONLY the new contents, in one batched forward pass.
   const newPlans = plan.filter((p): p is Extract<BulkPlan, { kind: 'new' }> => p.kind === 'new');
   const vecs = await prepareEmbeddingBatch(newPlans.map((p) => p.content));
-  const vecMap = new Map<string, Float32Array | null>();
+  const vecMap = new Map<string, PreparedEmbedding | null>();
   newPlans.forEach((p, i) => vecMap.set(p.id, vecs[i] ?? null));
 
   // Phase 3 (sync, single transaction): bump dups, insert new + embedding.
