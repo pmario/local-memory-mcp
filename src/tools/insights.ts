@@ -205,7 +205,7 @@ Tip: let \`session_end\` auto-detect the active session — no sessionId argumen
 Use \`search\` for broad queries across everything (learnings, decisions, entities, observations).
 Use \`recall\` for quick keyword search on learnings only, or without arguments to get the most recent.
 
-\`memory_search\` modes: \`hybrid\` (default) fuses FTS5 (BM25) and vector cosine with Reciprocal Rank Fusion; \`fts\` and \`vector\` run one ranker alone. Embeddings come from multilingual-e5-small (100+ languages). If the vector extension can't load, search falls back to FTS5 and says so in \`notice\`.
+\`memory_search\` modes: \`hybrid\` (default) fuses FTS5 (BM25) and vector cosine with Reciprocal Rank Fusion; \`fts\` and \`vector\` run one ranker alone. Embeddings come from multilingual-e5-small (100+ languages); long entries are embedded in chunks of up to 500 tokens, so vector search covers the whole text. If the vector extension can't load, search falls back to FTS5 and says so in \`notice\`.
 
 FTS5 uses bm25 ranking. Short queries work. Multi-word queries match any of the words; entries matching more of them rank higher.`,
 

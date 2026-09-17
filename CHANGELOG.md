@@ -2,7 +2,25 @@
 
 ## [Unreleased]
 
-Lean session start. 26 tools, 269 → **304 tests**.
+Lean session start and embeddings that cover whole entries. 26 tools, 269 → **328 tests**.
+
+### Changed — embeddings cover the whole entry
+
+The embedding model reads 512 tokens, about 1,740 characters. In a real store 399 of 453 learnings were longer, and their vectors covered a median 51% of the text, so vector search never saw the rest. Entries are now split at paragraphs into chunks of at most 500 tokens, and chunks after the first repeat the entry's first line. An entry ranks by its best chunk, lowered by 0.01·ln(chunk count) so that long entries gain no advantage from having more chunks.
+
+Vectors move to `embedding_chunks` and `embedding_sources`, and the old `embeddings` table is dropped. After boot a background pass re-embeds the store; the measuring machine needed 216 s for 462 entries (1,422 chunks). The same pass re-embeds any entry whose text, chunker or model changed. `schema_version` stays 2: the exported data is unchanged.
+
+Measured through each build's own `memory_search` on a copy of that store, real model, top-5 share and mean reciprocal rank:
+
+| Queries (sentences from the entries) | vector before | vector after | hybrid before | hybrid after |
+|---|---|---|---|---|
+| past char 3,000 of long entries (80) | 0.21 / 0.165 | 0.50 / 0.404 | 0.45 / 0.330 | 0.75 / 0.630 |
+| chars 100–900 (80) | 0.72 / 0.618 | 0.72 / 0.637 | 0.89 / 0.793 | 0.91 / 0.790 |
+| entries up to 1,742 chars (51) | 0.78 / 0.663 | 0.78 / 0.708 | 0.92 / 0.763 | 0.90 / 0.747 |
+
+### Added — notice when an amendment only appends
+
+`memory_learn_update` returns a `notice` when the new content starts with the old content unchanged: brief results show only the first line, which such an amendment leaves stating the earlier claim.
 
 ### Changed — `memory_session_start` answers with headlines
 

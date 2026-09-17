@@ -142,10 +142,11 @@ memory_search({ query: "...", mode: "vector" })    // cosine only
 **Architecture**
 
 - `search_fts` (FTS5, BM25) — keyword recall, the v1 path.
-- `embeddings` (`sqlite-vec` `vec0` virtual table, float[384]) — vector recall.
+- `embedding_chunks` (`sqlite-vec` `vec0` virtual table, float[384]) — vector recall. The model reads only 512 tokens, so an entry is split at paragraphs into chunks of at most 500 tokens, and chunks after the first repeat the entry's first line. An entry ranks by its best chunk, lowered by 0.01·ln(chunk count) so long entries gain no advantage from having more chunks.
+- `embedding_sources` records, per entry, its chunk count and the text hash, chunker and model its vectors came from. After boot a background pass embeds whatever is missing or stale; until it finishes, those entries are found through FTS5 only.
 - Reciprocal Rank Fusion (k=60) combines the two when `mode: "hybrid"`.
 - Embeddings come from `Xenova/multilingual-e5-small` (Apache-2.0) via Transformers.js, q8-quantized (~30 MB cache). Model loads lazily on the first embed call; runs entirely on CPU.
-- Auto-embed-on-insert covers learnings, decisions, and entity observations. Entities themselves are not embedded — their attached observations carry the semantic surface.
+- Auto-embed-on-insert covers learnings, decisions, entities and entity observations.
 
 **Multilingual.** The default model is trained on 100+ languages with strong DE/EN/ES retrieval. Mixing languages in your stored data is fine — query in one language and the cosine half still surfaces relevant results in another.
 
@@ -204,9 +205,9 @@ memory_learn_archive({ learningId: "...", reason: "wrong" })
 memory_learn_update({ learningId: "...", content: "…", confidence: 0.9 })
 ```
 
-`archive` is a soft delete: the row stays in `learnings` (with `archived = 1`, `archived_at`, and `lifecycle_state = 'archived' | 'archived:<reason>'`), the embedding stays in vec0 (so asOf-style cross-references can still resolve), but `recall` / `search` / the duplicate check all filter it out. Idempotent.
+`archive` is a soft delete: the row stays in `learnings` (with `archived = 1`, `archived_at`, and `lifecycle_state = 'archived' | 'archived:<reason>'`), its embedded chunks stay (so asOf-style cross-references can still resolve), but `recall` / `search` / the duplicate check all filter it out. Idempotent.
 
-`update` edits a live (non-archived) learning. If `content` changes we re-embed in the F4 atomic pattern (compute outside the transaction, write inside one sync `db.transaction()`). If the embedding write fails or vec is disabled, the now-stale old embedding is purged so cosine search can't surface a vector that no longer represents the live text. Bumps `usage_count` and sets `last_used` so an edit counts as a touch.
+`update` edits a live (non-archived) learning. If `content` changes we re-embed in the F4 atomic pattern (compute outside the transaction, write inside one sync `db.transaction()`). If the embedding write fails or vec is disabled, the now-stale old embedding is purged so cosine search can't surface a vector that no longer represents the live text. Bumps `usage_count` and sets `last_used` so an edit counts as a touch. When the new content only appends to the old, the result carries a `notice` to check that the first line still states the current claim, since brief results show only that line.
 
 **Trade-off — no audit trail.** `update` overwrites the previous content. The old text is not retained anywhere. This keeps the schema clean; a future version may add `memory_learn_history` plus an immutable `learnings_history` table for users who need point-in-time recovery. If you need an audit trail today, `memory_learn_archive(reason: "wrong")` the old learning and `memory_learn` the new one as a fresh row — the old text stays in the archived row.
 

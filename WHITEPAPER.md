@@ -103,7 +103,7 @@ local-memory-mcp  (Node, TypeScript strict)
     ▼
 One SQLite file  (better-sqlite3, WAL)
     - FTS5 (unicode61, accent-folding) — keyword/BM25
-    - sqlite-vec vec0 (384-dim) — cosine KNN
+    - sqlite-vec vec0 (384-dim, one vector per chunk) — cosine KNN
     - bi-temporal observations + typed relations
     - lives under your OS data dir; MEMORY_DB_PATH to relocate
 ```
@@ -115,7 +115,7 @@ No daemon, no socket, no container. The server is a stdio subprocess your MCP cl
 A query runs through two rankers and a fusion step:
 
 1. **FTS5 / BM25** over a unified full-text index (`unicode61 remove_diacritics 2`, so "münchen" matches "munchen"), kept in sync by triggers.
-2. **Vector cosine** via sqlite-vec's `vec0` virtual table against locally-computed 384-dim embeddings.
+2. **Vector cosine** via sqlite-vec's `vec0` virtual table against locally-computed 384-dim embeddings. The model reads 512 tokens, so each entry is embedded in paragraph-based chunks of at most 500 tokens and ranks by its best chunk, with a small penalty per chunk count so long entries gain no advantage.
 3. **Reciprocal Rank Fusion** (k=60, the canonical constant) merges the two rankings — high recall, multilingual, robust to vocabulary mismatch ("send" finds "publish").
 
 `mode` is selectable: `hybrid` (default), `fts`, or `vector`. If the vector extension can't load on a platform, or the embedding model is disabled, search **transparently degrades to FTS5** and a `notice` field tells the caller it did — so "vector ran and found nothing" is never confused with "vector silently fell back."
