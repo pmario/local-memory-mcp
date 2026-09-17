@@ -234,7 +234,7 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 
 **`memory_session_start`** -- Call this first in every conversation. Lists what your AI needs to pick up where you left off, as headlines with ids: the first paragraph of the latest session summary and the 5 newest learnings. With the optional `project` parameter, the session of that project comes first and only its learnings are listed. Pass `detail: "full"` for the last 3 summaries and whole learnings instead.
 
-**`memory_get`** -- Full text of learnings and decisions by id (1 to 20 ids), such as the ids `memory_session_start` and a brief `memory_search` list. Archived learnings are returned too, marked `archived: true`; unknown ids come back in `missing`. Read-only.
+**`memory_get`** -- Full text of learnings and decisions by id (1 to 20 ids), such as the ids `memory_session_start` and a brief `memory_search` list. Archived learnings are returned too, marked `archived: true`; unknown ids come back in `missing`. Opening an entry counts in its `usage_count` and `last_used`, so `memory_reflect` sees what you actually read.
 
 **`memory_session_end`** -- Call at the end to save a summary. Pass a `summary` string describing what was accomplished. The next session auto-loads this. Without arguments it closes the active session.
 

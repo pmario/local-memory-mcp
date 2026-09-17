@@ -90,15 +90,37 @@ describe('memoryGet', () => {
     expect(d.results[0]).toMatchObject({ id: learningId, content: 'retired fact', archived: true });
   });
 
-  it('does not bump the usage counter', async () => {
+  it('counts an open in usage_count and last_used', async () => {
     const { memoryGet } = await import('./get.js');
     const { getDb } = await import('../db/client.js');
     const learningId = await storeLearning('read me');
-    const usage = () =>
-      (getDb().prepare('SELECT usage_count FROM learnings WHERE id = ?').get(learningId) as { usage_count: number }).usage_count;
-    const before = usage();
+    const row = () =>
+      getDb().prepare('SELECT usage_count, last_used FROM learnings WHERE id = ?').get(learningId) as {
+        usage_count: number;
+        last_used: string | null;
+      };
+    expect(row()).toMatchObject({ usage_count: 0, last_used: null });
+
     memoryGet({ ids: [learningId] });
-    expect(usage()).toBe(before);
+    expect(row().usage_count).toBe(1);
+    expect(row().last_used).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+
+    memoryGet({ ids: [learningId, learningId] });
+    expect(row().usage_count).toBe(2);
+  });
+
+  it('counts only the learnings it found', async () => {
+    const { memoryGet } = await import('./get.js');
+    const { getDb } = await import('../db/client.js');
+    const first = await storeLearning('one');
+    const second = await storeLearning('two');
+    const untouched = await storeLearning('not asked for');
+    const decisionId = await storeDecision();
+
+    memoryGet({ ids: [first, second, decisionId, 'no-such-id'] });
+    const usage = (id: string) =>
+      (getDb().prepare('SELECT usage_count FROM learnings WHERE id = ?').get(id) as { usage_count: number }).usage_count;
+    expect([usage(first), usage(second), usage(untouched)]).toEqual([1, 1, 0]);
   });
 
   it('returns a repeated id once', async () => {

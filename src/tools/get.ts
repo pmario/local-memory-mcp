@@ -1,9 +1,9 @@
 /**
  * memory_get: full text of learnings and decisions by the ids other tools list as headlines.
- * Read-only (no usage bump); archived learnings resolve too, so an id from an old handoff still opens.
+ * An open counts as a use, like an edit does; archived learnings resolve too, so an id from an old handoff still opens.
  */
 import { z } from 'zod';
-import { getDb } from '../db/client.js';
+import { getDb, nowIso } from '../db/client.js';
 import type { ToolResult } from '../lib/types.js';
 
 export const getSchema = z.object({
@@ -59,6 +59,16 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
   }
   for (const { tags_json, ...row } of decisions) {
     found.set(row.id, { type: 'decision', ...row, tags: JSON.parse(tags_json) });
+  }
+
+  // Counting the open keeps usage_count meaning "recalled", which memory_reflect's
+  // most-used and stale lists assume; the counter is metadata, so the tool stays read-only for clients.
+  if (learnings.length > 0) {
+    const opened = learnings.map((row) => row.id);
+    db.prepare(
+      `UPDATE learnings SET usage_count = usage_count + 1, last_used = ?
+       WHERE id IN (${opened.map(() => '?').join(',')})`
+    ).run(nowIso(), ...opened);
   }
 
   const results = ids.filter((id) => found.has(id)).map((id) => found.get(id));
