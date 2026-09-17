@@ -499,6 +499,37 @@ describe('learn_update', () => {
   });
 });
 
+describe('recall detail: brief', () => {
+  it('replaces content with a headline, with and without a query', async () => {
+    const { learn, recall } = await import('./learn.js');
+    await learn({ category: 'pattern', content: 'okapi headline\n' + 'okapi detail '.repeat(100) });
+    for (const result of [recall({ detail: 'brief' }), recall({ query: 'okapi', detail: 'brief' })]) {
+      if (!result.success) throw new Error(result.error);
+      const [row] = (result.data as { results: Array<Record<string, unknown>> }).results;
+      expect(row).not.toHaveProperty('content');
+      expect(row!.headline).toBe('okapi headline');
+      expect(row!.category).toBe('pattern');
+    }
+  });
+
+  it('returns content and no headline by default', async () => {
+    const { learn, recall } = await import('./learn.js');
+    await learn({ category: 'pattern', content: 'okapi full text' });
+    const result = recall({});
+    if (!result.success) throw new Error(result.error);
+    const [row] = (result.data as { results: Array<Record<string, unknown>> }).results;
+    expect(row!.content).toBe('okapi full text');
+    expect(row).not.toHaveProperty('headline');
+  });
+
+  it('recallSchema accepts detail brief or full, nothing else', async () => {
+    const { recallSchema } = await import('./learn.js');
+    expect(recallSchema.safeParse({ detail: 'brief' }).success).toBe(true);
+    expect(recallSchema.safeParse({ detail: 'full' }).success).toBe(true);
+    expect(recallSchema.safeParse({ detail: 'short' }).success).toBe(false);
+  });
+});
+
 describe('recall + search', () => {
   it('recall without query returns both inserted learnings', async () => {
     const { learn, recall } = await import('./learn.js');

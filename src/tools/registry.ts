@@ -75,7 +75,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_recall',
-    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags scoping. Omit query for most-recent.',
+    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags scoping. Omit query for most-recent. detail: brief returns headlines instead of content.',
     schema: recallSchema,
     handler: (input) => recall(input as z.infer<typeof recallSchema>),
   },
@@ -99,7 +99,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_search',
-    description: 'Unified hybrid search across learnings, decisions, entities, and observations (FTS5 BM25 + vector cosine fused with RRF). mode: fts|vector|hybrid (default hybrid). Optional project/tags scoping.',
+    description: 'Unified hybrid search across learnings, decisions, entities, and observations (FTS5 BM25 + vector cosine fused with RRF). mode: fts|vector|hybrid (default hybrid). Optional project/tags scoping. detail: brief returns headlines for learnings and decisions; open them with memory_get.',
     schema: searchSchema,
     handler: (input) => search(input as z.infer<typeof searchSchema>),
   },

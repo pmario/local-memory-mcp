@@ -32,6 +32,7 @@ import { z } from 'zod';
 import { getDb, escapeFtsQuery } from '../db/client.js';
 import { isVectorEnabled } from '../db/vector.js';
 import { embedQuery, EMBEDDING_DIM } from '../lib/embed.js';
+import { headline } from '../lib/brief.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── Ranking-boost tunables ───────────────────────────
@@ -80,6 +81,8 @@ export const searchSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
   types: z.array(z.enum(['learning', 'decision', 'entity', 'observation'])).optional(),
   mode: z.enum(['fts', 'vector', 'hybrid']).optional(),
+  // brief swaps learning and decision bodies for a headline; memory_get opens the full row.
+  detail: z.enum(['brief', 'full']).optional(),
   // v2.3.0 scoping. `project` matches learnings/decisions whose project column
   // equals it (entity/observation rows have no project and are excluded when a
   // project filter is active). `tags` matches rows whose tags_json array
@@ -469,7 +472,12 @@ export async function search(input: z.infer<typeof searchSchema>): Promise<ToolR
 
     // Trim the internal ranking-signal columns from the public payload — they
     // are an implementation detail of the boost, not part of the result shape.
-    const results = rows.map((r) => ({ id: r.id, type: r.type, title: r.title, body: r.body, rank: r.rank }));
+    const brief = input.detail === 'brief';
+    const results = rows.map((r) =>
+      brief && (r.type === 'learning' || r.type === 'decision')
+        ? { id: r.id, type: r.type, title: r.title, headline: headline(r.body), rank: r.rank }
+        : { id: r.id, type: r.type, title: r.title, body: r.body, rank: r.rank }
+    );
 
     return {
       success: true,

@@ -235,7 +235,60 @@ describe('unified search', () => {
   });
 });
 
+describe('search detail: brief', () => {
+  type Row = { type: string; title: string; body?: string; headline?: string };
+
+  async function seedAllTypes(): Promise<void> {
+    const { learn } = await import('./learn.js');
+    const { decide } = await import('./decide.js');
+    const { entityCreate, entityObserve } = await import('./entity.js');
+    await learn({ category: 'pattern', content: 'zebra learning headline\n' + 'zebra detail '.repeat(100) });
+    await decide({ title: 'zebra decision', decision: 'zebra choice '.repeat(40), reasoning: 'because' });
+    const created = entityCreate({ name: 'zebra', entityType: 'animal', summary: 'striped' });
+    if (!created.success) throw new Error('setup failed');
+    await entityObserve({ entityId: (created.data as { id: string }).id, content: 'zebra observation text' });
+  }
+
+  it('replaces body with a headline for learnings and decisions, keeps body for entities and observations', async () => {
+    const { search } = await import('./search.js');
+    await seedAllTypes();
+    const result = await search({ query: 'zebra', mode: 'fts', detail: 'brief' });
+    if (!result.success) throw new Error(result.error);
+    const rows = (result.data as { results: Row[] }).results;
+    const byType = new Map(rows.map((r) => [r.type, r]));
+    expect([...byType.keys()].sort()).toEqual(['decision', 'entity', 'learning', 'observation']);
+
+    expect(byType.get('learning')).not.toHaveProperty('body');
+    expect(byType.get('learning')!.headline).toBe('zebra learning headline');
+    expect(byType.get('decision')).not.toHaveProperty('body');
+    expect(byType.get('decision')!.headline!.length).toBeLessThanOrEqual(200);
+    expect(byType.get('decision')!.title).toBe('zebra decision');
+
+    expect(byType.get('entity')).not.toHaveProperty('headline');
+    expect(byType.get('entity')!.body).toBeDefined();
+    expect(byType.get('observation')!.body).toBe('zebra observation text');
+  });
+
+  it('returns full bodies and no headline by default', async () => {
+    const { search } = await import('./search.js');
+    await seedAllTypes();
+    const result = await search({ query: 'zebra', mode: 'fts' });
+    if (!result.success) throw new Error(result.error);
+    for (const row of (result.data as { results: Row[] }).results) {
+      expect(row.body).toBeDefined();
+      expect(row).not.toHaveProperty('headline');
+    }
+  });
+});
+
 describe('search schema', () => {
+  it('accepts detail brief or full, nothing else', async () => {
+    const { searchSchema } = await import('./search.js');
+    expect(searchSchema.safeParse({ query: 'ok', detail: 'brief' }).success).toBe(true);
+    expect(searchSchema.safeParse({ query: 'ok', detail: 'full' }).success).toBe(true);
+    expect(searchSchema.safeParse({ query: 'ok', detail: 'short' }).success).toBe(false);
+  });
+
   it('rejects empty query', async () => {
     const { searchSchema } = await import('./search.js');
     expect(searchSchema.safeParse({ query: '' }).success).toBe(false);

@@ -21,6 +21,7 @@
 import { z } from 'zod';
 import { getDb, newId, nowIso, escapeFtsQuery } from '../db/client.js';
 import { prepareEmbedding, prepareEmbeddingBatch, writeEmbeddingSync, deleteEmbeddings, upsertEmbedding } from '../db/vector.js';
+import { headline } from '../lib/brief.js';
 import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
 
 // Re-export upsertEmbedding so existing test imports (`from './learn.js'`)
@@ -451,7 +452,17 @@ export const recallSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
   project: z.string().min(1).optional(),
   tags: z.array(z.string().min(1)).min(1).optional(),
+  // brief swaps content for a headline; memory_get opens the full row.
+  detail: z.enum(['brief', 'full']).optional(),
 });
+
+function recallResult(rows: unknown[], detail: 'brief' | 'full' | undefined): ToolResult {
+  const results =
+    detail === 'brief'
+      ? (rows as Array<{ content: string }>).map(({ content, ...row }) => ({ ...row, headline: headline(content) }))
+      : rows;
+  return { success: true, data: { results, count: results.length } };
+}
 
 // Shared learnings-scope predicate for recall. `alias` is the table alias used
 // in the surrounding query ('l' in the FTS join, '' for the bare-table paths).
@@ -491,7 +502,7 @@ export function recall(input: z.infer<typeof recallSchema>): ToolResult {
          LIMIT ?`
       )
       .all(...scope.args, limit);
-    return { success: true, data: { results: rows, count: (rows as unknown[]).length } };
+    return recallResult(rows, input.detail);
   }
 
   // FTS5 search
@@ -511,7 +522,7 @@ export function recall(input: z.infer<typeof recallSchema>): ToolResult {
          LIMIT ?`
       )
       .all(fts, ...scope.args, limit);
-    return { success: true, data: { results: rows, count: (rows as unknown[]).length } };
+    return recallResult(rows, input.detail);
   } catch {
     // Fallback to LIKE if FTS query parsing fails
     const scope = recallScopeClause(input, '');
@@ -525,6 +536,6 @@ export function recall(input: z.infer<typeof recallSchema>): ToolResult {
          LIMIT ?`
       )
       .all(`%${input.query}%`, ...scope.args, limit);
-    return { success: true, data: { results: rows, count: (rows as unknown[]).length } };
+    return recallResult(rows, input.detail);
   }
 }
