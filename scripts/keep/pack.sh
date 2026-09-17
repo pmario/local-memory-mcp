@@ -31,6 +31,7 @@ npm run build > /dev/null
 trap 'git -C "$repo" checkout -- package.json' EXIT
 npm pkg set version="$version"
 npm pack --pack-destination "$out" 2>&1 | tail -1
+git -C "$repo" checkout -- package.json
 
 git status --short
 ls -la "$out/studiomeyer-local-memory-mcp-$version.tgz"
