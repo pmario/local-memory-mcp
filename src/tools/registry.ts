@@ -39,7 +39,7 @@ import { reflect, reflectSchema } from './reflect.js';
 import {
   insights, insightsSchema,
   profile, profileSchema,
-  guide, guideSchema,
+  guide, guideSchema, GUIDE_TOPIC_NAMES,
   goal, goalSchema,
   health,
 } from './insights.js';
@@ -183,7 +183,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_guide',
-    description: 'On-demand help. Topics: quickstart, session, search, entities, learn, privacy.',
+    description: `On-demand help. Topics: ${GUIDE_TOPIC_NAMES.join(', ')}.`,
     schema: guideSchema,
     handler: (input) => guide(input as z.infer<typeof guideSchema>),
   },

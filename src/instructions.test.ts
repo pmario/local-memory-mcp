@@ -99,4 +99,13 @@ describe('memory_guide matches the code', () => {
     expect(content).not.toContain('merged');
     expect(content).toContain('memory_learn_update');
   });
+
+  it('the memory_guide tool description names every topic, so the model finds them without a call', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const { toMcpToolList } = await import('./tools/registry.js');
+    const result = guide({});
+    if (!result.success) throw new Error(result.error);
+    const description = toMcpToolList().find((t) => t.name === 'memory_guide')?.description;
+    for (const name of (result.data as { topics: string[] }).topics) expect(description).toContain(name);
+  });
 });

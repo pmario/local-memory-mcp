@@ -259,6 +259,9 @@ You can back up, copy, delete, or move the file at any time.
 Override the path: set MEMORY_DB_PATH=/your/preferred/path.sqlite`,
 };
 
+// The memory_guide tool description lists these, so a new topic cannot be missing from it.
+export const GUIDE_TOPIC_NAMES = Object.keys(GUIDE_TOPICS);
+
 export const guideSchema = z.object({
   topic: z.string().optional(),
 });
