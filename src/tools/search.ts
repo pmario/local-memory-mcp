@@ -23,10 +23,10 @@
  *   - project/tags scoping (cheap WHERE on the source tables) so a
  *     multi-project user can scope retrieval the same way insights/reflect do.
  *   - a conservative recency + usage + importance ranking boost applied
- *     post-fusion in hybrid mode (see rankingMultiplier). It re-orders near
- *     textual ties toward fresh/important rows but is tuned so it cannot
- *     override a clear textual relevance gap, and is a no-op (identity
- *     multiplier) when the ranking signals are equal.
+ *     post-fusion in hybrid mode (see rankingBoost). It re-orders near
+ *     textual ties toward fresh/important rows but is capped so it cannot
+ *     override a clear textual relevance gap, and is a no-op when the ranking
+ *     signals are equal.
  */
 import { z } from 'zod';
 import { getDb, escapeFtsQuery } from '../db/client.js';
@@ -36,13 +36,12 @@ import { headline } from '../lib/brief.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── Ranking-boost tunables ───────────────────────────
-// Conservative defaults: the maximum combined boost a row can earn is
-// recencyWeight + usageWeight + importanceWeight = 0.40, i.e. +40% on its RRF
-// score. RRF gaps between adjacent ranks near the top are small relative to the
-// score itself, so a row that is a clear textual winner on both rankers keeps
-// its lead; the boost only decides near-ties. All three are independently
-// tunable per-call via the `ranking` input or globally via env. Set them to 0
-// to disable the boost entirely.
+// Conservative defaults: a row earns at most recencyWeight + usageWeight +
+// importanceWeight = 0.40 of the boost cap, which is half the RRF gap between a
+// ranker's first two positions (see reciprocalRankFusion). A row that is a clear
+// textual winner therefore keeps its lead; the boost only decides near-ties. All
+// three are independently tunable per-call via the `ranking` input or globally
+// via env. Set them to 0 to disable the boost entirely.
 const DEFAULT_RANKING = {
   recencyWeight: 0.15,
   usageWeight: 0.1,
@@ -345,21 +344,19 @@ function vectorSearch(
 }
 
 /**
- * Compute the conservative ranking multiplier for a single fused row (v2.3.0).
+ * Compute the ranking boost for a single fused row (v2.3.0), as a share of the cap between 0 and 1.
  *
- * multiplier = 1
- *   + recencyWeight    * exp(-ageDays / halfLifeDays)     // fresh > stale
+ * boost = min(1,
+ *     recencyWeight    * exp(-ageDays / halfLifeDays)     // fresh > stale
  *   + usageWeight      * usage_count / (usage_count + 5)  // used > unused (saturating)
- *   + importanceWeight * clamp(importance, 0, 1)          // important > not
+ *   + importanceWeight * clamp(importance, 0, 1))         // important > not
  *
- * Every term is >= 0, so the multiplier is always >= 1 — the boost can only
- * lift a row, never sink it below its base RRF score. Missing signals
- * contribute 0 (no recencyTs => no recency term, null importance => no
- * importance term), so two rows with identical signals get the identical
- * multiplier and their relative order is governed purely by the base RRF score
- * (the equal-signals invariance the tests assert).
+ * Missing signals contribute 0 (no recencyTs => no recency term, null
+ * importance => no importance term), so two rows with identical signals get the
+ * identical boost and their relative order is governed purely by the base RRF
+ * score (the equal-signals invariance the tests assert).
  */
-function rankingMultiplier(row: SearchRow, opts: RankingOpts, nowMs: number): number {
+function rankingBoost(row: SearchRow, opts: RankingOpts, nowMs: number): number {
   let recency = 0;
   if (row.recencyTs) {
     // SQLite stores 'YYYY-MM-DD HH:MM:SS' (space, UTC, no zone). Normalise to an
@@ -379,7 +376,7 @@ function rankingMultiplier(row: SearchRow, opts: RankingOpts, nowMs: number): nu
       ? Math.min(1, Math.max(0, row.importance))
       : 0;
 
-  return 1 + opts.recencyWeight * recency + opts.usageWeight * usage + opts.importanceWeight * importance;
+  return Math.min(1, opts.recencyWeight * recency + opts.usageWeight * usage + opts.importanceWeight * importance);
 }
 
 /**
@@ -388,8 +385,12 @@ function rankingMultiplier(row: SearchRow, opts: RankingOpts, nowMs: number): nu
  * constant. We then return the top-N by fused score with the metadata of
  * whichever ranker found it first.
  *
- * v2.3.0: after fusion we multiply each candidate's RRF score by a recency /
- * usage / importance multiplier (rankingMultiplier) and re-sort. The boost is
+ * Rows a ranker scored equally share a position, so equally relevant rows fuse
+ * to equal scores.
+ *
+ * v2.3.0: after fusion we add a recency / usage / importance boost (rankingBoost)
+ * of at most half the gap between a ranker's first two positions and re-sort, so
+ * the boost reorders near-ties but never a clear textual winner. The boost is
  * a no-op when `ranking` weights are all 0 or when every candidate shares the
  * same signals — the relative order then collapses back to the pure RRF order.
  */
@@ -405,11 +406,13 @@ function reciprocalRankFusion(
   >();
 
   for (const r of rankings) {
+    let position = 0;
     for (let i = 0; i < r.length; i++) {
       const row = r[i];
       if (!row) continue;
+      if (i > 0 && row.rank !== r[i - 1]?.rank) position = i;
       const key = `${row.type}:${row.id}`;
-      const contribution = 1 / (k + i);
+      const contribution = 1 / (k + position);
       const existing = acc.get(key);
       if (existing) {
         existing.score += contribution;
@@ -419,9 +422,10 @@ function reciprocalRankFusion(
     }
   }
 
+  const maxBoost = (1 / k - 1 / (k + 1)) / 2;
   const nowMs = Date.now();
   const merged = Array.from(acc.values())
-    .map(({ row, score }) => ({ row, score: score * rankingMultiplier(row, ranking, nowMs) }))
+    .map(({ row, score }) => ({ row, score: score + maxBoost * rankingBoost(row, ranking, nowMs) }))
     .sort((a, b) => b.score - a.score);
 
   return merged.slice(0, limit).map(({ row, score }) => ({
@@ -429,7 +433,7 @@ function reciprocalRankFusion(
     type: row.type,
     title: row.title,
     body: row.body,
-    rank: score, // RRF score (boosted) — higher is better, unlike raw BM25/distance.
+    rank: score, // RRF score plus boost — higher is better, unlike raw BM25/distance.
   }));
 }
 

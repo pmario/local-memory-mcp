@@ -158,6 +158,43 @@ describe('hybrid ranking boost (v2.3.0)', () => {
     }
   });
 
+  it('caps the boost below one rank step even with every weight at its maximum', async () => {
+    // A one-position gap in a single ranker: an uncapped boost at full weights would close it.
+    const { learn } = await import('./learn.js');
+    const { search } = await import('./search.js');
+    const { getDb } = await import('../db/client.js');
+    const { isVectorEnabled } = await import('../db/vector.js');
+    const { mockEmbed } = await import('../lib/embed.js');
+    if (!isVectorEnabled()) return;
+
+    const strong = await learn({ category: 'pattern', content: 'zenith alpha' });
+    const weak = await learn({ category: 'pattern', content: 'zenith alpha 42' });
+    if (!strong.success || !weak.success) throw new Error('setup failed');
+    const strongId = (strong.data as { id: string }).id;
+    const weakId = (weak.data as { id: string }).id;
+    getDb().prepare('UPDATE learnings SET importance = 1.0, usage_count = 100 WHERE id = ?').run(weakId);
+    getDb().prepare("UPDATE learnings SET date = '2024-01-01 00:00:00' WHERE id = ?").run(strongId);
+
+    // Preconditions: the mock embedding ignores digits, so the vectors tie; FTS ranks the shorter entry first.
+    expect(mockEmbed('zenith alpha 42')).toEqual(mockEmbed('zenith alpha'));
+    const fts = await search({ query: 'zenith', mode: 'fts', limit: 5 });
+    const ftsRows = (fts.success ? fts.data : { results: [] }) as { results: Array<{ id: string; rank: number }> };
+    expect(ftsRows.results.map((x) => x.id)).toEqual([strongId, weakId]);
+    expect(ftsRows.results[0]!.rank).not.toBe(ftsRows.results[1]!.rank);
+
+    const r = await search({
+      query: 'zenith',
+      mode: 'hybrid',
+      limit: 5,
+      ranking: { recencyWeight: 1, usageWeight: 1, importanceWeight: 1 },
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      const d = r.data as { results: Array<{ id: string }> };
+      expect(d.results[0]?.id).toBe(strongId);
+    }
+  });
+
   it('the ranking.* override (weights all 0) disables the boost', async () => {
     // With the boost disabled, an important doc no longer jumps ahead of an
     // equally-relevant one — the order collapses to the pure RRF tie.
