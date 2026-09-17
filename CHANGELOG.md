@@ -28,7 +28,7 @@ The default `detail: "brief"` returns the first paragraph of the latest session 
 
 ### Added — `memory_get`
 
-Full text of learnings and decisions by id (1–20), including archived learnings (`archived: true`); unknown ids come back in `missing`. An open counts in a learning's `usage_count` and `last_used`, which is what `memory_reflect`'s most-used and stale lists have always assumed a recall does; the counter is metadata, so the tool stays annotated read-only.
+Full text of learnings, decisions and sessions by id (1–20), including archived learnings (`archived: true`); unknown ids come back in `missing`. A session id returns the whole summary and its open tasks, which a brief session start cuts to the first paragraph. An open counts in a learning's `usage_count` and `last_used`, which is what `memory_reflect`'s most-used and stale lists have always assumed a recall does; the counter is metadata, so the tool stays annotated read-only.
 
 ### Added — `detail: "brief"` for `memory_search` and `memory_recall`
 

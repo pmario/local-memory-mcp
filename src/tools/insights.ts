@@ -195,7 +195,7 @@ This MCP server gives your AI assistant persistent memory across conversations. 
 A session is one conversation window. It captures context, goals, and outcomes.
 
 - \`session_start\` — begin a session. The default \`detail: "brief"\` returns the first paragraph of the latest summary (same project preferred) and headlines of the 5 newest learnings, only the project's when \`project\` is given. \`detail: "full"\` returns the last 3 summaries and 5 whole learnings.
-- \`memory_get\` — the full text of the learnings and decisions whose ids a brief result lists.
+- \`memory_get\` — the full text behind the ids a brief result lists; a session id opens its whole summary and open tasks.
 - \`session_end\` — close the current session with a summary.
 
 Tip: let \`session_end\` auto-detect the active session — no sessionId argument needed.`,

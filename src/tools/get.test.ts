@@ -123,6 +123,30 @@ describe('memoryGet', () => {
     expect([usage(first), usage(second), usage(untouched)]).toEqual([1, 1, 0]);
   });
 
+  it('opens a session by id, with the summary a brief start truncates', async () => {
+    const { memoryGet } = await import('./get.js');
+    const { sessionStart, sessionEnd } = await import('./session.js');
+    const started = await sessionStart({ project: 'alpha' });
+    if (!started.success) throw new Error('setup failed');
+    const sessionId = (started.data as { sessionId: string }).sessionId;
+    const summary = 'First paragraph, which a brief start shows.\n\nSecond paragraph, which it cuts.';
+    sessionEnd({ sessionId, summary, tasks: ['open task'] });
+
+    const result = memoryGet({ ids: [sessionId] });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const d = result.data as GetData;
+    expect(d.missing).toEqual([]);
+    expect(d.results[0]).toMatchObject({
+      type: 'session',
+      id: sessionId,
+      project: 'alpha',
+      summary,
+      tasks: ['open task'],
+    });
+    expect(d.results[0]!.ended_at).toBeTruthy();
+  });
+
   it('returns a repeated id once', async () => {
     const { memoryGet } = await import('./get.js');
     const learningId = await storeLearning('once');

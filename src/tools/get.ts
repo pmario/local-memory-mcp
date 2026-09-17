@@ -1,5 +1,5 @@
 /**
- * memory_get: full text of learnings and decisions by the ids other tools list as headlines.
+ * memory_get: full text of learnings, decisions and sessions by the ids other tools list as headlines.
  * An open counts as a use, like an edit does; archived learnings resolve too, so an id from an old handoff still opens.
  */
 import { z } from 'zod';
@@ -21,6 +21,15 @@ interface LearningRow {
   memory_type: string;
   lifecycle_state: string;
   archived: number;
+}
+
+interface SessionRow {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+  project: string | null;
+  summary: string | null;
+  tasks_json: string | null;
 }
 
 interface DecisionRow {
@@ -52,6 +61,13 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
        FROM decisions WHERE id IN (${placeholders})`
     )
     .all(...ids) as DecisionRow[];
+  // A brief memory_session_start lists a previous session's first paragraph only, so its id has to open the rest.
+  const sessions = db
+    .prepare(
+      `SELECT id, started_at, ended_at, project, summary, tasks_json
+       FROM sessions WHERE id IN (${placeholders})`
+    )
+    .all(...ids) as SessionRow[];
 
   const found = new Map<string, Record<string, unknown>>();
   for (const { tags_json, archived, ...row } of learnings) {
@@ -59,6 +75,9 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
   }
   for (const { tags_json, ...row } of decisions) {
     found.set(row.id, { type: 'decision', ...row, tags: JSON.parse(tags_json) });
+  }
+  for (const { tasks_json, ...row } of sessions) {
+    found.set(row.id, { type: 'session', ...row, tasks: tasks_json ? JSON.parse(tasks_json) : [] });
   }
 
   // Counting the open keeps usage_count meaning "recalled", which memory_reflect's
