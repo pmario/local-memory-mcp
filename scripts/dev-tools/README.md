@@ -1,4 +1,9 @@
-# Dev tools: markdown export / import
+# Dev tools
+
+A lossless markdown export and import, and `retrieval-check.mjs`, which
+measures how well a build finds whole entries.
+
+## Markdown export / import
 
 Two standalone scripts that turn the memory store into a human-readable,
 lossless markdown tree and back. They are an independent backup path: the
@@ -155,6 +160,33 @@ and FTS rebuild all apply.
   excluded, not aborted; the store side is atomic (nothing is written
   unless the whole envelope parses). Durable runs log each skip, with the
   file path and line, to `<mdDir>/error.log`.
+
+## retrieval-check.mjs: does a build find whole entries?
+
+```
+node scripts/dev-tools/retrieval-check.mjs [options]
+```
+
+Queries are sentences taken from the store's own learnings, so the entry a
+query comes from is the known answer. A query from the end of a long entry
+therefore only ranks first if the build embeds more than the first 512
+tokens the model reads.
+
+Run bare for help plus a dry run; `-r`/`--run` measures, which takes
+several minutes (real model, and a re-embed of the copy whenever the
+build's embeddings differ from the store's). The source store is only read,
+through a read-only connection, so it can stay in use; the copy and the
+result JSON land in `--out`. **That copy holds your memories** — keep it
+out of a repository and delete it when you are done.
+
+- `--db <path>` source store, `--build <dir>` the package whose `dist/` and
+  dependencies run the search, `--label <name>` names the copy and the
+  result file. Compare two builds by running it once per build and diffing
+  the JSONs.
+- Three query sets: `tail` (past char 3000 of long entries), `head`
+  (chars 100-900) and `short` (entries inside the model's window). Each is
+  reported per mode with r1, r5 and MRR.
+- Not part of `npm test`: it needs the real model and a real store.
 
 ## Tests
 
