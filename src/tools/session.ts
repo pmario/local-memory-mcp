@@ -7,12 +7,15 @@
  */
 import { z } from 'zod';
 import { getDb, newId, nowIso } from '../db/client.js';
+import { firstParagraph, headline } from '../lib/brief.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── session_start ───────────────────────────────────
 
 export const sessionStartSchema = z.object({
   project: z.string().optional(),
+  // brief (default) lists headlines and ids to open with memory_get; full returns whole texts.
+  detail: z.enum(['brief', 'full']).optional(),
 });
 
 export function sessionStart(input: z.infer<typeof sessionStartSchema>): ToolResult {
@@ -24,7 +27,9 @@ export function sessionStart(input: z.infer<typeof sessionStartSchema>): ToolRes
     input.project ?? null
   );
 
-  // Load context from previous sessions (last 3, same project preferred)
+  const brief = (input.detail ?? 'brief') === 'brief';
+
+  // Load context from previous sessions (same project preferred)
   const prevSessions = db
     .prepare(
       `SELECT id, started_at, ended_at, project, summary
@@ -33,35 +38,38 @@ export function sessionStart(input: z.infer<typeof sessionStartSchema>): ToolRes
        ORDER BY
          CASE WHEN project = ? THEN 0 ELSE 1 END,
          started_at DESC
-       LIMIT 3`
+       LIMIT ?`
     )
-    .all(id, input.project ?? '') as Array<{
+    .all(id, input.project ?? '', brief ? 1 : 3) as Array<{
     id: string;
     started_at: string;
     ended_at: string | null;
     project: string | null;
-    summary: string | null;
+    summary: string;
   }>;
 
-  // Total session count + recent learnings
+  // Total session count + recent learnings; brief scopes them to the project when one is given.
   const totalSessions = (db.prepare('SELECT COUNT(*) as c FROM sessions').get() as { c: number }).c;
+  const scoped = brief && input.project !== undefined;
   const recentLearnings = db
     .prepare(
       `SELECT id, category, content, date
        FROM learnings
-       WHERE archived = 0
+       WHERE archived = 0 ${scoped ? 'AND project = ?' : ''}
        ORDER BY date DESC
        LIMIT 5`
     )
-    .all() as Array<{ id: string; category: string; content: string; date: string }>;
+    .all(...(scoped ? [input.project] : [])) as Array<{ id: string; category: string; content: string; date: string }>;
 
   return {
     success: true,
     data: {
       sessionId: id,
       totalSessions,
-      previousSessions: prevSessions,
-      recentLearnings,
+      previousSessions: brief ? prevSessions.map((s) => ({ ...s, summary: firstParagraph(s.summary) })) : prevSessions,
+      recentLearnings: brief
+        ? recentLearnings.map(({ id, category, date, content }) => ({ id, category, date, headline: headline(content) }))
+        : recentLearnings,
     },
     message: `Session #${totalSessions} started.${input.project ? ` Project: ${input.project}` : ''}`,
   };

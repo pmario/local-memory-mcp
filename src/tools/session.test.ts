@@ -2,9 +2,10 @@
  * Tests for the session-tracking tools.
  *
  * Session semantics:
- *   - session_start creates a row, returns context from the last 3 sessions
- *     with a summary (same-project preferred), total session count and the
- *     5 most recent unarchived learnings.
+ *   - session_start creates a row and returns the total session count plus context.
+ *     detail 'full': the last 3 sessions with a summary (same-project preferred) and
+ *     the 5 most recent unarchived learnings. detail 'brief' (default): 1 session with
+ *     its first paragraph, and headlines of the project's 5 newest learnings.
  *   - session_end marks the current session as ended, stores summary + tasks.
  *     If no sessionId is passed, it closes the most recent open session.
  */
@@ -91,7 +92,7 @@ describe('sessionStart', () => {
 
     // Now open a new session on 'alpha' — the first two previousSessions should
     // belong to project 'alpha', not 'beta'.
-    const current = sessionStart({ project: 'alpha' });
+    const current = sessionStart({ project: 'alpha', detail: 'full' });
     if (current.success) {
       const d = current.data as { previousSessions: Array<{ project: string | null }> };
       expect(d.previousSessions.length).toBeGreaterThanOrEqual(2);
@@ -106,7 +107,7 @@ describe('sessionStart', () => {
       const s = sessionStart({});
       if (s.success) sessionEnd({ sessionId: (s.data as { sessionId: string }).sessionId, summary: `run ${i}` });
     }
-    const current = sessionStart({});
+    const current = sessionStart({ detail: 'full' });
     if (current.success) {
       const d = current.data as { previousSessions: unknown[] };
       expect(d.previousSessions.length).toBe(3);
@@ -137,7 +138,7 @@ describe('sessionStart', () => {
         .prepare('UPDATE learnings SET archived = 1 WHERE id = ?')
         .run((archived.data as { id: string }).id);
     }
-    const result = sessionStart({});
+    const result = sessionStart({ detail: 'full' });
     if (result.success) {
       const d = result.data as { recentLearnings: Array<{ content: string }> };
       const contents = d.recentLearnings.map((r) => r.content);
@@ -161,6 +162,107 @@ describe('sessionStart', () => {
       // The message should still exist but not mention an empty project.
       expect(result.message).not.toContain('Project:');
     }
+  });
+});
+
+describe('sessionStart brief (the default)', () => {
+  type BriefData = {
+    previousSessions: Array<Record<string, unknown> & { summary: string; project: string | null }>;
+    recentLearnings: Array<Record<string, unknown>>;
+  };
+
+  async function endSession(project: string | undefined, summary: string): Promise<void> {
+    const { sessionStart, sessionEnd } = await import('./session.js');
+    const s = sessionStart({ project });
+    if (!s.success) throw new Error('setup failed');
+    sessionEnd({ sessionId: (s.data as { sessionId: string }).sessionId, summary });
+  }
+
+  it('lists learnings as id, category, date and a headline of at most 200 chars, without content', async () => {
+    const { sessionStart } = await import('./session.js');
+    const { learn } = await import('./learn.js');
+    await learn({ category: 'pattern', content: 'x'.repeat(300) + '\nsecond line' });
+    const result = sessionStart({});
+    if (!result.success) throw new Error('sessionStart failed');
+    const [row] = (result.data as BriefData).recentLearnings;
+    expect(Object.keys(row!).sort()).toEqual(['category', 'date', 'headline', 'id']);
+    expect((row!.headline as string).length).toBeLessThanOrEqual(200);
+    expect(row!.headline).toMatch(/^x+/);
+  });
+
+  it('uses the first line as the headline', async () => {
+    const { sessionStart } = await import('./session.js');
+    const { learn } = await import('./learn.js');
+    await learn({ category: 'pattern', content: 'The claim.\nThe evidence.' });
+    const result = sessionStart({});
+    if (!result.success) throw new Error('sessionStart failed');
+    expect((result.data as BriefData).recentLearnings[0]!.headline).toBe('The claim.');
+  });
+
+  it("with a project, lists only that project's learnings", async () => {
+    const { sessionStart } = await import('./session.js');
+    const { learn } = await import('./learn.js');
+    await learn({ category: 'pattern', content: 'alpha fact', project: 'alpha' });
+    await learn({ category: 'pattern', content: 'beta fact', project: 'beta' });
+    await learn({ category: 'pattern', content: 'unscoped fact' });
+    const result = sessionStart({ project: 'alpha' });
+    if (!result.success) throw new Error('sessionStart failed');
+    expect((result.data as BriefData).recentLearnings.map((r) => r.headline)).toEqual(['alpha fact']);
+  });
+
+  it('without a project, lists the newest learnings of every project', async () => {
+    const { sessionStart } = await import('./session.js');
+    const { learn } = await import('./learn.js');
+    await learn({ category: 'pattern', content: 'alpha fact', project: 'alpha' });
+    await learn({ category: 'pattern', content: 'unscoped fact' });
+    const result = sessionStart({});
+    if (!result.success) throw new Error('sessionStart failed');
+    const headlines = (result.data as BriefData).recentLearnings.map((r) => r.headline);
+    expect(headlines).toContain('alpha fact');
+    expect(headlines).toContain('unscoped fact');
+  });
+
+  it('returns one previous session with the first paragraph of its summary, at most 400 chars', async () => {
+    const { sessionStart } = await import('./session.js');
+    const { getDb } = await import('../db/client.js');
+    await endSession(undefined, 'older run');
+    // started_at has second resolution; backdate so "newest" is deterministic.
+    getDb().prepare("UPDATE sessions SET started_at = datetime('now', '-10 seconds')").run();
+    await endSession(undefined, 'y'.repeat(500) + '\n\nsecond paragraph');
+    const result = sessionStart({});
+    if (!result.success) throw new Error('sessionStart failed');
+    const { previousSessions } = result.data as BriefData;
+    expect(previousSessions.length).toBe(1);
+    expect(previousSessions[0]!.summary.length).toBeLessThanOrEqual(400);
+    expect(previousSessions[0]!.summary).toMatch(/^y+/);
+    expect(previousSessions[0]!.summary).not.toContain('second paragraph');
+    expect(Object.keys(previousSessions[0]!).sort()).toEqual(['ended_at', 'id', 'project', 'started_at', 'summary']);
+  });
+
+  it('keeps a short first paragraph whole', async () => {
+    const { sessionStart } = await import('./session.js');
+    await endSession(undefined, 'Did the thing.\n\nDetails follow.');
+    const result = sessionStart({});
+    if (!result.success) throw new Error('sessionStart failed');
+    expect((result.data as BriefData).previousSessions[0]!.summary).toBe('Did the thing.');
+  });
+
+  it('prefers the same project for the one previous session', async () => {
+    const { sessionStart } = await import('./session.js');
+    await endSession('alpha', 'alpha run');
+    await endSession('beta', 'beta run, newer');
+    const result = sessionStart({ project: 'alpha' });
+    if (!result.success) throw new Error('sessionStart failed');
+    expect((result.data as BriefData).previousSessions.map((s) => s.summary)).toEqual(['alpha run']);
+  });
+
+  it('stays under 3,000 chars for 5 learnings of 5,000 chars and 3 summaries of 2,000 chars', async () => {
+    const { sessionStart } = await import('./session.js');
+    const { learn } = await import('./learn.js');
+    for (let i = 0; i < 5; i++) await learn({ category: 'pattern', content: `${i}`.repeat(5000) });
+    for (let i = 0; i < 3; i++) await endSession(undefined, `${i}`.repeat(2000));
+    const result = sessionStart({});
+    expect(JSON.stringify(result, null, 2).length).toBeLessThan(3000);
   });
 });
 
@@ -259,6 +361,13 @@ describe('session schemas', () => {
   it('sessionStartSchema accepts an empty object', async () => {
     const { sessionStartSchema } = await import('./session.js');
     expect(sessionStartSchema.safeParse({}).success).toBe(true);
+  });
+
+  it('sessionStartSchema accepts detail brief or full, nothing else', async () => {
+    const { sessionStartSchema } = await import('./session.js');
+    expect(sessionStartSchema.safeParse({ detail: 'brief' }).success).toBe(true);
+    expect(sessionStartSchema.safeParse({ detail: 'full' }).success).toBe(true);
+    expect(sessionStartSchema.safeParse({ detail: 'short' }).success).toBe(false);
   });
 
   it('sessionEndSchema accepts an empty object (auto-close path)', async () => {
