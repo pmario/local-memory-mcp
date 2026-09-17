@@ -209,6 +209,8 @@ Tip: let \`session_end\` auto-detect the active session — no sessionId argumen
 Use \`search\` for broad queries across everything (learnings, decisions, entities, observations).
 Use \`recall\` for quick keyword search on learnings only, or without arguments to get the most recent.
 
+\`memory_search\` modes: \`hybrid\` (default) fuses FTS5 (BM25) and vector cosine with Reciprocal Rank Fusion; \`fts\` and \`vector\` run one ranker alone. Embeddings come from multilingual-e5-small (100+ languages). If the vector extension can't load, search falls back to FTS5 and says so in \`notice\`.
+
 FTS5 uses bm25 ranking. Short queries work. Multi-word queries are AND-combined.`,
 
   entities: `# Knowledge Graph
@@ -227,6 +229,21 @@ Learnings are facts, patterns, insights that should persist across sessions.
 - Categories: pattern, mistake, insight, research, architecture, infrastructure, tool, workflow, performance, security.
 - Memory type: episodic ("it happened") or semantic ("it is true"). Auto-classified.
 - Duplicate handling: exact duplicates are skipped and bump the usage counter; very similar ones may be merged.`,
+
+  lifecycle: `# Lifecycle
+
+- \`memory_entity_open({asOf: "2026-04-15"})\` — point-in-time view: the observations whose validity window contained that instant.
+- \`memory_contradictions()\` — LLM-free scan for observation pairs with high cosine similarity but disagreeing negation or confidence. Needs sqlite-vec.
+- \`memory_observation_supersede({observationId, supersededById?})\` — retire a stale fact by setting valid_to; it stays for asOf queries. With supersededById, the newer fact's valid_from is the cutoff.
+- \`memory_learn_archive({learningId, reason?})\` — soft-delete a learning: it never resurfaces in search, \`memory_get\` still opens it.
+- \`memory_learn_update({learningId, content?, confidence?, tags?})\` — edit a live learning; re-embeds when the content changes.
+- \`memory_reflect({lookbackDays?: 7})\` — most-used and stale learnings, hot entities, open decisions, as data plus a markdown summary. No LLM call.`,
+
+  portability: `# Portability
+
+- \`memory_learn_bulk({items: [...]})\` — insert up to 500 learnings in one atomic call (parallel embedding, exact duplicates skipped). For restores, migrations, seeding a fresh store.
+- \`memory_export({includeSessions?, includeArchived?})\` — dump everything to a versioned JSON envelope. Embeddings are re-derived on import.
+- \`memory_import({data})\` — load an export envelope. Additive and idempotent. The same envelope also imports into the hosted tier (memory.studiomeyer.io).`,
 
   privacy: `# Privacy
 

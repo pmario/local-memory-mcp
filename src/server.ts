@@ -25,6 +25,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { logger } from './lib/logger.js';
 import { closeDb, getDb } from './db/client.js';
 import { getHandler, toMcpToolList, TOOLS } from './tools/registry.js';
+import { INSTRUCTIONS } from './instructions.js';
 
 const SERVER_NAME = 'local-memory-mcp';
 // Read from package.json instead of a hardcoded literal — the literal sat at
@@ -51,58 +52,6 @@ const SERVER_VERSION: string = (() => {
   process.stderr.write('[local-memory] warn: package.json not found next to the module — advertising 0.0.0\n');
   return '0.0.0';
 })();
-
-const INSTRUCTIONS = `Local Memory — Persistent memory for your AI assistant.
-
-100% local. No cloud. No API keys. Your data stays on your machine.
-
-FIRST TIME?
-  Call memory_guide({topic: "quickstart"}) to learn how this works.
-
-EVERY CONVERSATION:
-  1. Call memory_session_start() at the beginning — loads your context.
-  2. Use memory_learn() to store knowledge as you work.
-  3. Use memory_entity_observe() for facts about people, projects, tools.
-  4. Use memory_search() or memory_recall() to find past knowledge.
-  5. Call memory_session_end() at the end to save a summary.
-
-SEARCH (v2.0.0+):
-  memory_search runs hybrid retrieval — FTS5 (BM25) fused with vector
-  cosine via Reciprocal Rank Fusion (RRF, k=60). Pass mode: 'fts' |
-  'vector' | 'hybrid' (default) to switch modes. Embeddings use the
-  multilingual-e5-small model (DE / EN / ES / 100+ languages). If the
-  vector extension can't load, search falls back to FTS5 transparently.
-
-LIFECYCLE (v2.1.0+):
-  - memory_entity_open({asOf: "2026-04-15"}) — bi-temporal point-in-time
-    view. Returns observations whose validity window contained that
-    instant. "What did I know at this date?"
-  - memory_contradictions() — LLM-free scanner: surfaces observation
-    pairs with high cosine similarity but disagreeing negation or
-    confidence. Requires sqlite-vec.
-  - memory_learn_archive({learningId, reason?}) — soft-delete a
-    learning. Row stays for asOf queries; never resurfaces in search.
-  - memory_learn_update({learningId, content?, confidence?, tags?}) —
-    edit a live learning; re-embeds atomically when content changes.
-  - memory_reflect({lookbackDays?: 7}) — aggregation pass that surfaces
-    most-used + stale learnings, hot entities, open decisions. Returns
-    structured data PLUS markdown summary. No LLM call. Cheap to run.
-
-LIFECYCLE + PORTABILITY (v2.2.0+):
-  - memory_observation_supersede({observationId, supersededById?}) — the
-    execution arm for memory_contradictions: retire a stale fact by setting
-    valid_to. The row stays for asOf queries but drops out of live search
-    and entity views. Pass supersededById to use the newer fact's valid_from
-    as the cutoff (Zep fact-supersession).
-  - memory_learn_bulk({items: [...]}) — batch-insert up to 500 learnings in
-    one atomic call (parallel embedding, exact-duplicate skip). For restores,
-    migrations, seeding a fresh DB.
-  - memory_export({includeSessions?, includeArchived?}) — dump everything to
-    a versioned JSON envelope. Embeddings re-derive on import.
-  - memory_import({data}) — load an export envelope. Additive + idempotent.
-    The same envelope also imports into the hosted tier (memory.studiomeyer.io).
-
-25 tools available. Call memory_guide() for help on any topic.`;
 
 process.stderr.write('[local-memory] imports loaded, bootstrapping db…\n');
 
