@@ -37,15 +37,18 @@ import type { ToolResult } from '../lib/types.js';
 
 // ─── Ranking-boost tunables ───────────────────────────
 // Conservative defaults: a row earns at most recencyWeight + usageWeight +
-// importanceWeight = 0.40 of the boost cap, which is half the RRF gap between a
+// importanceWeight = 0.25 of the boost cap, which is half the RRF gap between a
 // ranker's first two positions (see reciprocalRankFusion). A row that is a clear
 // textual winner therefore keeps its lead; the boost only decides near-ties. All
 // three are independently tunable per-call via the `ranking` input or globally
 // via env. Set them to 0 to disable the boost entirely.
+//
+// importanceWeight defaults to 0: no tool writes learnings.importance, so only an
+// imported value could carry it, and a caller that trusts one asks for the weight.
 const DEFAULT_RANKING = {
   recencyWeight: 0.15,
   usageWeight: 0.1,
-  importanceWeight: 0.15,
+  importanceWeight: 0,
   // Exponential decay half-life in days for the recency term. A row touched
   // `halfLifeDays` ago contributes half of recencyWeight.
   halfLifeDays: 30,

@@ -33,6 +33,28 @@ afterEach(async () => {
 });
 
 describe('hybrid ranking boost (v2.3.0)', () => {
+  it('ignores importance unless the caller asks for it', async () => {
+    // No tool writes learnings.importance, so the default weight is 0; an imported value only counts on request.
+    const { learn } = await import('./learn.js');
+    const { search } = await import('./search.js');
+    const { getDb } = await import('../db/client.js');
+    const { isVectorEnabled } = await import('../db/vector.js');
+    if (!isVectorEnabled()) return;
+
+    const plain = await learn({ category: 'pattern', content: 'zenith alpha' });
+    const important = await learn({ category: 'pattern', content: 'zenith bravo' });
+    if (!plain.success || !important.success) throw new Error('setup failed');
+    getDb()
+      .prepare('UPDATE learnings SET importance = 0.95 WHERE id = ?')
+      .run((important.data as { id: string }).id);
+
+    const byDefault = await search({ query: 'zenith', mode: 'hybrid', limit: 5 });
+    if (byDefault.success) {
+      const d = byDefault.data as { results: Array<{ rank: number }> };
+      expect(Math.abs(d.results[0]!.rank - d.results[1]!.rank)).toBeLessThan(1e-9);
+    }
+  });
+
   it('an important doc outranks an equally-relevant unimportant one', async () => {
     const { learn } = await import('./learn.js');
     const { search } = await import('./search.js');
@@ -49,7 +71,7 @@ describe('hybrid ranking boost (v2.3.0)', () => {
       .prepare('UPDATE learnings SET importance = 0.95 WHERE id = ?')
       .run((important.data as { id: string }).id);
 
-    const r = await search({ query: 'zenith', mode: 'hybrid', limit: 5 });
+    const r = await search({ query: 'zenith', mode: 'hybrid', limit: 5, ranking: { importanceWeight: 0.15 } });
     expect(r.success).toBe(true);
     if (r.success) {
       const d = r.data as { results: Array<{ id: string; rank: number }>; mode: string };

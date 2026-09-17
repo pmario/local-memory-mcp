@@ -42,6 +42,10 @@ Every client puts the instructions into each session's system prompt, and Claude
 
 The 2.3.0 boost multiplied fused scores by up to 1.40, while adjacent ranks differ by 1.6%, so a fresh entry beat clear textual winners. The boost is now added, capped at half the gap between a ranker's first two positions, and rows a ranker scored equally share a position, so the boost decides their tie. On a real store its top-1 hit rate for short entries rose from 0.61 to 0.76.
 
+### Changed — importance is off by default
+
+No tool writes a learning's `importance`, so only an import could carry one; `importanceWeight` therefore defaults to 0. The `ranking.importanceWeight` input and `MEMORY_RANK_IMPORTANCE_WEIGHT` still work for a store whose values are trusted.
+
 ### Fixed — English search errors, honest tool schemas
 
 `memory_search` reported failures with the German prefix "Suchfehler". In `tools/list`, array parameters lost their length limits (`memory_get` 1–20 ids, `memory_learn_bulk` 1–500 items) and the date strings of `memory_entity_open` and `memory_observation_supersede` were advertised as objects.
