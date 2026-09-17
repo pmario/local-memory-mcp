@@ -57,7 +57,7 @@ interface ToolDef {
 export const TOOLS: ToolDef[] = [
   {
     name: 'memory_session_start',
-    description: 'Start a session. Loads context from previous sessions. Call this FIRST in every conversation.',
+    description: "Start a session. Lists headlines and ids of the latest session and learnings (only the project's when project is given); open entries with memory_get, or pass detail: full for whole texts. Call this FIRST in every conversation.",
     schema: sessionStartSchema,
     handler: (input) => sessionStart(input as z.infer<typeof sessionStartSchema>),
   },

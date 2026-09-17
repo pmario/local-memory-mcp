@@ -11,7 +11,7 @@
 ![License](https://img.shields.io/github/license/studiomeyer-io/local-memory-mcp?style=flat-square&color=22c55e&label=license)
 ![Last commit](https://img.shields.io/github/last-commit/studiomeyer-io/local-memory-mcp?style=flat-square&color=88c0d0&label=updated)
 ![GitHub stars](https://img.shields.io/github/stars/studiomeyer-io/local-memory-mcp?style=flat-square&color=ffd700&logo=github&label=stars)
-<!-- /badges -->**Persistent local memory for Claude, Cursor & Codex. 25 tools. Hybrid retrieval (BM25 + vector cosine, RRF). Bi-temporal asOf queries + fact supersession. LLM-free contradiction detection + reflection. Portable JSON export/import. Multilingual embeddings. No cloud. No API keys.**
+<!-- /badges -->**Persistent local memory for Claude, Cursor & Codex. 26 tools. Hybrid retrieval (BM25 + vector cosine, RRF). Bi-temporal asOf queries + fact supersession. LLM-free contradiction detection + reflection. Portable JSON export/import. Multilingual embeddings. No cloud. No API keys.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/@studiomeyer/local-memory-mcp)](https://www.npmjs.com/package/@studiomeyer/local-memory-mcp)
@@ -227,11 +227,13 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 
 **Sleeptime via hooks.** Letta / Zep / Mem0 run reflection in a background "sleeptime" loop. We run on-demand because we're a stateless stdio daemon — but you get sleeptime semantics for free by wiring a Claude Code SessionStart or SessionEnd hook (or an n8n cron, or a `crontab` entry) that calls `memory_reflect`. The summary lands in the LLM's context at the same time as your `memory_session_start` snapshot. Zero new infrastructure.
 
-## Tools (25)
+## Tools (26)
 
 ### Sessions
 
-**`memory_session_start`** -- Call this first in every conversation. Loads context from your last 3 sessions (summaries, recent learnings) so your AI knows what you were working on. Optional `project` parameter to scope sessions by project.
+**`memory_session_start`** -- Call this first in every conversation. Lists what your AI needs to pick up where you left off, as headlines with ids: the first paragraph of the latest session summary and the 5 newest learnings. With the optional `project` parameter, the session of that project comes first and only its learnings are listed. Pass `detail: "full"` for the last 3 summaries and whole learnings instead.
+
+**`memory_get`** -- Full text of learnings and decisions by id (1 to 20 ids), such as the ids `memory_session_start` and a brief `memory_search` list. Archived learnings are returned too, marked `archived: true`; unknown ids come back in `missing`. Read-only.
 
 **`memory_session_end`** -- Call at the end to save a summary. Pass a `summary` string describing what was accomplished. The next session auto-loads this. Without arguments it closes the active session.
 
@@ -239,9 +241,9 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 
 **`memory_learn`** -- The core tool. Stores a piece of knowledge with a category and content. Categories: `pattern` (recurring success), `mistake` (what went wrong), `insight` (strategic realization), `research` (external knowledge), `architecture`, `infrastructure`, `tool`, `workflow`, `performance`, `security`. The duplicate gatekeeper checks whether the identical content is already stored. If so, it bumps the usage counter instead of creating a duplicate. To extend an existing entry rather than add a new one, use `memory_learn_update` with its id. Optional: `tags`, `confidence` (0-1), `project`, `memoryType` (episodic or semantic, auto-classified if omitted).
 
-**`memory_recall`** -- Quick search on learnings only. Pass a `query` string for keyword search, or omit it to get the most recent learnings. Good for "what did I learn about X" questions. Use `limit` to control how many results come back (default 10).
+**`memory_recall`** -- Quick search on learnings only. Pass a `query` string for keyword search, or omit it to get the most recent learnings. Good for "what did I learn about X" questions. Use `limit` to control how many results come back (default 20). `detail: "brief"` returns a headline instead of the content.
 
-**`memory_search`** -- Unified search across everything: learnings, decisions, entities, and observations. Uses FTS5 with bm25 ranking. Multi-word queries match any of the words and rank by relevance. Use `types` array to filter (e.g. `["learning", "decision"]`). This is the broadest search tool.
+**`memory_search`** -- Unified search across everything: learnings, decisions, entities, and observations. Uses FTS5 with bm25 ranking. Multi-word queries match any of the words and rank by relevance. Use `types` array to filter (e.g. `["learning", "decision"]`). `detail: "brief"` returns a headline instead of the body for learnings and decisions; open them with `memory_get`. This is the broadest search tool.
 
 **`memory_learn_archive`** *(v2.1+)* -- Soft-delete a learning. The row stays in the DB (so asOf queries that reference it still resolve) but never resurfaces in recall or search. Optional `reason` is stored on `lifecycle_state` as `archived:<reason>`. Idempotent — calling twice returns `already_archived`.
 

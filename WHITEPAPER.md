@@ -18,7 +18,7 @@ AI assistants have no memory. Every session starts from zero. In 2026 this is st
 
 It is not a thin note-taker. Under the hood it is a structured, bi-temporal knowledge graph with hybrid retrieval:
 
-- **25 tools** spanning sessions, learnings, decisions, a typed knowledge graph, lifecycle management, reflection, and portability.
+- **26 tools** spanning sessions, learnings, decisions, a typed knowledge graph, lifecycle management, reflection, and portability.
 - **Hybrid search** — FTS5/BM25 fused with sqlite-vec cosine similarity via Reciprocal Rank Fusion (RRF, k=60), over multilingual embeddings (DE / EN / ES + 100 more) computed locally.
 - **Bi-temporal facts** — every observation carries `valid_from`/`valid_to`, so you can ask "what did I know on date X?" and retire a stale fact without deleting its history.
 - **LLM-free cognition** — contradiction detection and reflection run as deterministic heuristics in SQL, so the no-API-key promise holds end to end.
@@ -57,7 +57,7 @@ Developers and privacy-conscious users who want structured, searchable, long-ter
 
 ### 2.1 Core functions
 
-**Sessions.** Each conversation can be started and ended; `memory_session_start` loads context from the last few sessions so the assistant resumes where you left off.
+**Sessions.** Each conversation can be started and ended; `memory_session_start` lists headlines of the latest session and learnings so the assistant resumes where you left off, and `memory_get` opens the entries it needs in full.
 
 **Learnings.** Typed knowledge entries (`pattern`, `mistake`, `insight`, `research`, `architecture`, `infrastructure`, `tool`, `workflow`, `performance`, `security`) with confidence, tags, and an episodic/semantic type that is auto-classified. A gatekeeper prevents duplicates: an exact match bumps a usage counter instead of storing the content twice. Enriching an existing entry is explicit, via `memory_learn_update` against its id, so a write never silently rewrites a row the caller did not name.
 
@@ -73,13 +73,13 @@ Developers and privacy-conscious users who want structured, searchable, long-ter
 
 **Portability (v2.2).** `memory_export` / `memory_import` move your whole memory as a versioned JSON envelope (Section 4).
 
-### 2.2 Tool inventory — 25 tools
+### 2.2 Tool inventory — 26 tools
 
 | Block | Count | Examples |
 |---|---|---|
 | Sessions | 2 | `session_start`, `session_end` |
 | Learnings | 5 | `learn`, `recall`, `learn_archive`, `learn_update`, `learn_bulk` |
-| Search | 1 | `search` (hybrid: FTS5 + vector via RRF) |
+| Search + read | 2 | `search` (hybrid: FTS5 + vector via RRF), `get` (full text by id) |
 | Decisions | 1 | `decide` |
 | Knowledge graph | 7 | `entity_create/observe/search/open/relate/delete`, `observation_supersede` |
 | Cognition (LLM-free) | 2 | `contradictions`, `reflect` |
@@ -96,7 +96,7 @@ MCP Client (Claude Desktop / Claude Code / Cursor / Codex / Continue)
     │  stdio (JSON-RPC) — no network, no port
     ▼
 local-memory-mcp  (Node, TypeScript strict)
-    │  Tool layer (25 tools, Zod-validated)
+    │  Tool layer (26 tools, Zod-validated)
     │  Hybrid retrieval (RRF k=60 over BM25 + cosine)
     │  Local embeddings (Transformers.js, multilingual-e5-small)
     │  Gatekeeper · bi-temporal valid_from/valid_to · LLM-free heuristics

@@ -183,10 +183,11 @@ This MCP server gives your AI assistant persistent memory across conversations. 
 
 ## Basic flow
 
-1. Call \`memory_session_start\` at the beginning of each conversation to load context.
-2. As the conversation progresses, call \`memory_learn\` to store knowledge and \`memory_entity_observe\` to add facts about people/projects/tools.
-3. Call \`memory_search\` or \`memory_recall\` to find past knowledge.
-4. Call \`memory_session_end\` at the end to store a summary for next time.
+1. Call \`memory_session_start\` at the beginning of each conversation: it lists headlines and ids of recent context.
+2. Call \`memory_get\` with the ids whose full text you need.
+3. As the conversation progresses, call \`memory_learn\` to store knowledge and \`memory_entity_observe\` to add facts about people/projects/tools.
+4. Call \`memory_search\` or \`memory_recall\` to find past knowledge.
+5. Call \`memory_session_end\` at the end to store a summary for next time.
 
 ## Philosophy
 
@@ -199,7 +200,8 @@ This MCP server gives your AI assistant persistent memory across conversations. 
 
 A session is one conversation window. It captures context, goals, and outcomes.
 
-- \`session_start\` — begin a session, load context from the last 3 sessions.
+- \`session_start\` — begin a session. The default \`detail: "brief"\` returns the first paragraph of the latest summary (same project preferred) and headlines of the 5 newest learnings, only the project's when \`project\` is given. \`detail: "full"\` returns the last 3 summaries and 5 whole learnings.
+- \`memory_get\` — the full text of the learnings and decisions whose ids a brief result lists.
 - \`session_end\` — close the current session with a summary.
 
 Tip: let \`session_end\` auto-detect the active session — no sessionId argument needed.`,

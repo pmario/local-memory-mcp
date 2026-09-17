@@ -1,5 +1,40 @@
 # Changelog
 
+## [Unreleased]
+
+Lean session start. 26 tools, 269 → **304 tests**.
+
+### Changed — `memory_session_start` answers with headlines
+
+The default `detail: "brief"` returns the first paragraph of the latest session summary (same project first) and a 200-char headline with id for each of the 5 newest learnings. With `project`, only that project's learnings are listed; before, another project's newest entries filled the list. `detail: "full"` keeps the old answer. **Breaking** for readers of `recentLearnings[].content` that call without `detail`.
+
+### Added — `memory_get`
+
+Full text of learnings and decisions by id (1–20), including archived learnings (`archived: true`); unknown ids come back in `missing`. Read-only.
+
+### Added — `detail: "brief"` for `memory_search` and `memory_recall`
+
+Headlines instead of bodies for learnings and decisions. The default stays `full`.
+
+### Changed — server instructions under 1,000 chars
+
+Every client puts the instructions into each session's system prompt, and Claude Code cuts them at 2,048 chars. The text now lists the five calls of a session; the removed lifecycle and portability details moved to the new `memory_guide` topics `lifecycle` and `portability`.
+
+### Fixed — guide text
+
+`search` said multi-word queries are AND-combined; they match any word. `learn` still promised merging of similar entries, removed in 2.4.0.
+
+### Measured
+
+Over stdio against a copy of a real store (446 learnings), 2.4.2 → this release:
+
+| | 2.4.2 | now |
+|---|---|---|
+| instructions | 2,720 chars | 472 chars |
+| `memory_session_start`, 4 projects | 17,986–26,268 chars | 1,236–2,550 chars |
+| `memory_search`, limit 10, brief | 35,379 chars | 4,071 chars |
+| `tools/list` | 12,555 chars | 13,388 chars |
+
 ## [2.4.3] — 2026-08-09
 
 Security + correctness release. 239 → **251 tests**. No schema change, no API change.

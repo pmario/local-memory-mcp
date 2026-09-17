@@ -85,6 +85,15 @@ describe('memory_guide matches the code', () => {
     expect(content).toContain('any of the words');
   });
 
+  it('quickstart and session point to memory_get and the brief default', async () => {
+    const quickstart = await topic('quickstart');
+    const session = await topic('session');
+    expect(quickstart).toContain('memory_get');
+    expect(session).toContain('memory_get');
+    expect(session).toContain('brief');
+    expect(session).not.toContain('last 3 sessions.');
+  });
+
   it('learn no longer promises merging of similar entries, removed in v2.4.0', async () => {
     const content = await topic('learn');
     expect(content).not.toContain('merged');
