@@ -553,11 +553,11 @@ describe('recall + search', () => {
 });
 
 describe('tool registry', () => {
-  it('exports exactly 25 tools with valid JSON Schema for each', async () => {
+  it('exports exactly 26 tools with valid JSON Schema for each', async () => {
     const { TOOLS, toMcpToolList } = await import('./registry.js');
-    expect(TOOLS.length).toBe(25);
+    expect(TOOLS.length).toBe(26);
     const listed = toMcpToolList();
-    expect(listed.length).toBe(25);
+    expect(listed.length).toBe(26);
     for (const t of listed) {
       expect(t.name).toMatch(/^memory_/);
       expect(typeof t.description).toBe('string');

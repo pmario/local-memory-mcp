@@ -19,6 +19,7 @@ import {
   learnBulk, learnBulkSchema,
 } from './learn.js';
 import { search, searchSchema } from './search.js';
+import { memoryGet, getSchema } from './get.js';
 import { decide, decideSchema } from './decide.js';
 import {
   entityCreateEmbedded, entityCreateSchema,
@@ -101,6 +102,12 @@ export const TOOLS: ToolDef[] = [
     description: 'Unified hybrid search across learnings, decisions, entities, and observations (FTS5 BM25 + vector cosine fused with RRF). mode: fts|vector|hybrid (default hybrid). Optional project/tags scoping.',
     schema: searchSchema,
     handler: (input) => search(input as z.infer<typeof searchSchema>),
+  },
+  {
+    name: 'memory_get',
+    description: 'Full text of learnings and decisions by id (1-20 ids), e.g. the ids memory_session_start lists. Archived learnings included; unknown ids come back in missing.',
+    schema: getSchema,
+    handler: (input) => memoryGet(input as z.infer<typeof getSchema>),
   },
   {
     name: 'memory_decide',
@@ -296,6 +303,7 @@ const ANNOTATIONS: Record<string, ToolAnnotations> = {
   memory_learn_update: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   memory_learn_bulk: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   memory_search: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  memory_get: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   memory_decide: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   // NOT idempotent: a repeat call with a different summary UPDATEs the entity
   // (entity.ts entityCreate), so the second call can change state. (R2 FINDING-A.)
