@@ -11,6 +11,23 @@ fails or leaves a mixed package. A new folder per build has nothing locked,
 other conversations keep their build until they restart, and switching back is
 one config change.
 
+## One-off: share the model cache
+
+Transformers.js caches the embedding model inside the package tree, so every
+side-by-side install downloads the same 129 MB again. Point the server at one
+shared folder instead, once:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/keep/set-model-cache-env.ps1
+```
+
+It adds `MEMORY_EMBED_CACHE_DIR` to the `memory` entry in `~/.claude.json`
+(default `%LOCALAPPDATA%\local-memory-mcp-model-cache`) and is a no-op when the
+variable is already there. Seed that folder by copying an existing
+`node_modules/@huggingface/transformers/.cache`, or let the next boot download
+once. The variable takes effect when a conversation restarts; afterwards the
+in-tree caches of the installed builds can be deleted.
+
 ## The loop
 
 ```bash
@@ -54,4 +71,5 @@ only removed once it appears in neither.
 |---|---|
 | `pack.sh` | Same tarball name, rebuilt and overwritten; `dist` is cleaned first |
 | `switch-memory-build.ps1` | Reports "already pointing at …" and changes nothing |
+| `set-model-cache-env.ps1` | Reports the variable is already set and changes nothing |
 | `probe-locks.ps1` | Read-only; it only opens files for write access to see whether that fails |
