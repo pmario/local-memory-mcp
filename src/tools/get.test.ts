@@ -4,7 +4,9 @@
  * By hand against a scratch store (MEMORY_DB_PATH pointing at an empty file):
  *   memory_learn({category: 'pattern', content: 'alpha'})  -> data.id = L
  *   memory_get({ids: [L, 'nope']})
- *   -> { results: [{ type: 'learning', id: L, content: 'alpha', archived: false, ... }], missing: ['nope'] }
+ *   -> { results: [{ type: 'learning', id: L, content: 'alpha', archived: false, ... }], missing: ['nope'], ambiguous: [] }
+ *   memory_get({ids: [L.slice(0, 8)]})
+ *   -> { results: [{ type: 'learning', id: L, ... }], missing: [], ambiguous: [] }
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -26,6 +28,7 @@ afterEach(async () => {
 type GetData = {
   results: Array<Record<string, unknown> & { type: string; id: string }>;
   missing: string[];
+  ambiguous: Array<{ id: string; candidates: string[] }>;
 };
 
 async function storeLearning(content: string): Promise<string> {
@@ -153,6 +156,90 @@ describe('memoryGet', () => {
     const result = memoryGet({ ids: [learningId, learningId] });
     if (!result.success) throw new Error('memoryGet failed');
     expect((result.data as GetData).results.length).toBe(1);
+  });
+});
+
+describe('memoryGet by id prefix', () => {
+  // Test scaffolding: sessions with hand-made ids, so two of them share a prefix.
+  async function insertSession(id: string): Promise<void> {
+    const { getDb } = await import('../db/client.js');
+    getDb().prepare('INSERT INTO sessions (id, summary) VALUES (?, ?)').run(id, `session ${id}`);
+  }
+
+  it('opens an entry by a unique 8-character prefix and reports its full id', async () => {
+    const { memoryGet } = await import('./get.js');
+    const { getDb } = await import('../db/client.js');
+    const learningId = await storeLearning('opened by prefix');
+
+    const result = memoryGet({ ids: [learningId.slice(0, 8)] });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const d = result.data as GetData;
+    expect(d).toMatchObject({ missing: [], ambiguous: [] });
+    expect(d.results).toHaveLength(1);
+    expect(d.results[0]).toMatchObject({ type: 'learning', id: learningId, content: 'opened by prefix' });
+    const usage = getDb().prepare('SELECT usage_count FROM learnings WHERE id = ?').get(learningId) as { usage_count: number };
+    expect(usage.usage_count).toBe(1);
+  });
+
+  it('opens by a longer prefix, dashes and upper case included', async () => {
+    const { memoryGet } = await import('./get.js');
+    const decisionId = await storeDecision();
+    const result = memoryGet({ ids: [decisionId.slice(0, 13).toUpperCase()] });
+    if (!result.success) throw new Error('memoryGet failed');
+    expect((result.data as GetData).results.map((r) => r.id)).toEqual([decisionId]);
+  });
+
+  it('lists a prefix shared by two entries in ambiguous with both full ids, never a guess', async () => {
+    const { memoryGet } = await import('./get.js');
+    const first = 'abcdef12-0000-4000-8000-000000000001';
+    const second = 'abcdef12-0000-4000-8000-000000000002';
+    await insertSession(second);
+    await insertSession(first);
+
+    const result = memoryGet({ ids: ['abcdef12'] });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data).toEqual({
+      results: [],
+      missing: [],
+      ambiguous: [{ id: 'abcdef12', candidates: [first, second] }],
+    });
+    expect(result.message).toBe('0 found, 1 ambiguous.');
+  });
+
+  it('treats a 7-character prefix as missing', async () => {
+    const { memoryGet } = await import('./get.js');
+    const learningId = await storeLearning('too short to open');
+    const short = learningId.slice(0, 7);
+    const result = memoryGet({ ids: [short] });
+    if (!result.success) throw new Error('memoryGet failed');
+    expect(result.data).toEqual({ results: [], missing: [short], ambiguous: [] });
+  });
+
+  it('lists a prefix that matches nothing in missing', async () => {
+    const { memoryGet } = await import('./get.js');
+    await insertSession('abcdef12-0000-4000-8000-000000000001');
+    const result = memoryGet({ ids: ['12345678'] });
+    if (!result.success) throw new Error('memoryGet failed');
+    expect(result.data).toEqual({ results: [], missing: ['12345678'], ambiguous: [] });
+  });
+
+  it('resolves each id of a mixed call and returns an entry asked for twice once', async () => {
+    const { memoryGet } = await import('./get.js');
+    const learningId = await storeLearning('mixed');
+    const decisionId = await storeDecision();
+    await insertSession('abcdef12-0000-4000-8000-000000000001');
+    await insertSession('abcdef12-0000-4000-8000-000000000002');
+
+    const result = memoryGet({ ids: [decisionId.slice(0, 8), learningId, learningId.slice(0, 8), 'abcdef12', 'no-such-id'] });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const d = result.data as GetData;
+    expect(d.results.map((r) => r.id)).toEqual([decisionId, learningId]);
+    expect(d.missing).toEqual(['no-such-id']);
+    expect(d.ambiguous.map((a) => a.id)).toEqual(['abcdef12']);
+    expect(result.message).toBe('2 found, 1 missing, 1 ambiguous.');
   });
 });
 

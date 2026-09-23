@@ -1,6 +1,7 @@
 /**
  * memory_get: full text of learnings, decisions and sessions by the ids other tools list as headlines.
  * An open counts as a use, like an edit does; archived learnings resolve too, so an id from an old handoff still opens.
+ * An id of 8 to 35 hex characters opens by prefix when exactly one entry starts with it, and lands in ambiguous when several do.
  */
 import { z } from 'zod';
 import { getDb, nowIso } from '../db/client.js';
@@ -44,9 +45,39 @@ interface DecisionRow {
   confidence: number;
 }
 
+// Handoffs quote the first 8 characters of a UUID; a shorter string could open an arbitrary entry.
+const ID_PREFIX = /^[0-9a-f]{8}[0-9a-f-]{0,27}$/;
+
+function idsStartingWith(db: ReturnType<typeof getDb>, prefix: string): string[] {
+  const rows = db
+    .prepare(
+      `SELECT id FROM learnings WHERE id GLOB @pattern
+       UNION SELECT id FROM decisions WHERE id GLOB @pattern
+       UNION SELECT id FROM sessions WHERE id GLOB @pattern
+       ORDER BY id`
+    )
+    .all({ pattern: `${prefix}*` }) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
+}
+
 export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
   const db = getDb();
-  const ids = [...new Set(input.ids)];
+  const requested = [...new Set(input.ids)];
+
+  const fullIdOf = new Map<string, string>();
+  const ambiguous: Array<{ id: string; candidates: string[] }> = [];
+  for (const id of requested) {
+    const prefix = id.toLowerCase();
+    if (!ID_PREFIX.test(prefix)) {
+      fullIdOf.set(id, id);
+      continue;
+    }
+    const candidates = idsStartingWith(db, prefix);
+    if (candidates.length === 1) fullIdOf.set(id, candidates[0]!);
+    else if (candidates.length > 1) ambiguous.push({ id, candidates });
+  }
+
+  const ids = [...new Set(fullIdOf.values())];
   const placeholders = ids.map(() => '?').join(',');
 
   const learnings = db
@@ -91,10 +122,16 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
   }
 
   const results = ids.filter((id) => found.has(id)).map((id) => found.get(id));
-  const missing = ids.filter((id) => !found.has(id));
+  const ambiguousIds = new Set(ambiguous.map((entry) => entry.id));
+  const missing = requested.filter((id) => !ambiguousIds.has(id) && !found.has(fullIdOf.get(id) ?? ''));
+  const counts = [
+    `${results.length} found`,
+    ...(missing.length > 0 ? [`${missing.length} missing`] : []),
+    ...(ambiguous.length > 0 ? [`${ambiguous.length} ambiguous`] : []),
+  ];
   return {
     success: true,
-    data: { results, missing },
-    message: `${results.length} found${missing.length > 0 ? `, ${missing.length} missing` : ''}.`,
+    data: { results, missing, ambiguous },
+    message: `${counts.join(', ')}.`,
   };
 }
