@@ -71,6 +71,31 @@ describe('memory_guide keeps what INSTRUCTIONS no longer carries', () => {
   });
 });
 
+describe('the writing rule reaches every session that writes (local-memory-mcp-lfu)', () => {
+  it('memory_guide has a writing topic with the whole atomic/factual rule', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    for (const text of ['atomic', 'factual', 'one subject', 'verbatim', 'sentence case', 'first line', 'AMENDED', 'memory_learn_update', 'split']) {
+      expect(content).toContain(text);
+    }
+  });
+
+  it('the server instructions send a writer to that topic', async () => {
+    const { INSTRUCTIONS } = await import('./instructions.js');
+    expect(INSTRUCTIONS).toContain('memory_guide({topic: "writing"})');
+  });
+
+  it('every tool that writes a learning text points to that topic', async () => {
+    const { toMcpToolList } = await import('./tools/registry.js');
+    for (const name of ['memory_learn', 'memory_learn_update', 'memory_learn_bulk']) {
+      const description = toMcpToolList().find((t) => t.name === name)?.description;
+      expect(description).toContain('memory_guide({topic: "writing"})');
+    }
+  });
+});
+
 describe('memory_guide matches the code', () => {
   async function topic(name: string): Promise<string> {
     const { guide } = await import('./tools/insights.js');

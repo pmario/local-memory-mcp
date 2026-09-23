@@ -90,7 +90,7 @@
     {"name": "memory_reflect", "description": "Aggregation pass: most-used + stale learnings, hot entities, open decisions. Returns structured data + markdown summary."},
     {"name": "memory_insights", "description": "Stats and breakdowns (sessions, learnings, decisions, categories, entity types)"},
     {"name": "memory_profile", "description": "Read or write a profile field (name, role, preferences, language, timezone)"},
-    {"name": "memory_guide", "description": "Built-in help. Topics: quickstart, session, search, entities, learn, lifecycle, portability, privacy."},
+    {"name": "memory_guide", "description": "Built-in help. Topics: quickstart, session, search, entities, learn, writing, lifecycle, portability, privacy."},
     {"name": "memory_goal", "description": "Read, set, or clear the current user goal"},
     {"name": "memory_health", "description": "SQLite integrity, vector status, schema version, DB size"}
   ],

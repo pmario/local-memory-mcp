@@ -282,7 +282,7 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 
 **`memory_profile`** -- Store personal info locally. Use `set` to store fields (name, role, preferences, language, timezone), use `get` to retrieve them. Your AI can read this at session start to personalize its behavior.
 
-**`memory_guide`** -- Built-in help. Topics: `quickstart` (how to get started), `session` (session workflow), `search` (how search works), `entities` (knowledge graph explained), `learn` (learning categories), `privacy` (where data lives, what is collected).
+**`memory_guide`** -- Built-in help. Topics: `quickstart` (how to get started), `session` (session workflow), `search` (how search works), `entities` (knowledge graph explained), `learn` (learning categories), `writing` (how to write a learning: atomic and factual), `lifecycle` (asOf, archive, update, supersede, reflect), `portability` (bulk insert, export, import), `privacy` (where data lives, what is collected).
 
 ### Portability *(v2.2+)*
 

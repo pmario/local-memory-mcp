@@ -69,7 +69,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn',
-    description: 'Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates. Write it atomic (one subject) and factual (all the facts, no story): it is stored with style ["atomic", "factual"], and a text with an appended AMENDED section is refused.',
+    description: 'Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates. Write it atomic (one subject) and factual (all the facts, no story) as memory_guide({topic: "writing"}) describes: it is stored with style ["atomic", "factual"], and a text with an appended AMENDED section is refused.',
     schema: learnSchema,
     handler: (input) => learn(input as z.infer<typeof learnSchema>),
   },
@@ -87,13 +87,13 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn_update',
-    description: 'Edit a live learning (content, confidence, tags, project, category, style). project null unscopes it. Re-embeds atomically when content changes; a content rewrite is stored as style ["atomic", "factual"] and must state the current state, not append an AMENDED section.',
+    description: 'Edit a live learning (content, confidence, tags, project, category, style). project null unscopes it. Re-embeds atomically when content changes; a content rewrite is stored as style ["atomic", "factual"], follows memory_guide({topic: "writing"}), and must state the current state, not append an AMENDED section.',
     schema: learnUpdateSchema,
     handler: (input) => learnUpdate(input as z.infer<typeof learnUpdateSchema>),
   },
   {
     name: 'memory_learn_bulk',
-    description: 'Batch-insert many learnings in one atomic call (parallel embed, exact-duplicate skip). For restores, migrations, seeding.',
+    description: 'Batch-insert many learnings in one atomic call (parallel embed, exact-duplicate skip). For restores, migrations, seeding. Each text is stored as style ["atomic", "factual"], so write it as memory_guide({topic: "writing"}) describes.',
     schema: learnBulkSchema,
     handler: (input) => learnBulk(input as z.infer<typeof learnBulkSchema>),
   },

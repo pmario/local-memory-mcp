@@ -245,6 +245,20 @@ Learnings are facts, patterns, insights that should persist across sessions.
 - Memory type: episodic ("it happened") or semantic ("it is true"). Auto-classified.
 - Duplicate handling: exact duplicates are skipped and bump the usage counter; similar entries are stored as new rows. To enrich an existing entry, call \`memory_learn_update\` with its id.`,
 
+  writing: `# Writing a learning: atomic and factual
+
+Write every learning atomic and factual; the server stores each new learning and each content rewrite with style ["atomic", "factual"]. The rule serves two goals: fewer tokens when an entry is read, and a better hit when it is searched. Hybrid search embeds chunks of up to 500 tokens, split at paragraph boundaries, with a model trained on human language, and keyword search needs the exact tokens.
+
+An atomic learning has one subject. Split an entry with several subjects into separate learnings and link them with [[id8]]. In one measured store, two long entries rewritten and split this way ranked first for 12 of 13 symptom queries in hybrid search; the long originals ranked first for 8, and a rewrite that still kept six subjects in one entry for 9.
+
+A factual learning has the prose removed and all the information kept, with no length cap.
+- Keep: symptoms as a user would describe them, error texts verbatim, versions and platform, file and line, log lines and numbers, what was absent, rulings in the maintainer's own words, sources (test file, issue, bead) and [[id8]] cross-references.
+- Drop: the story of how it was found, emphasis and ALL CAPS, repetition, restatements of the same rule, and superseded claims; the handoff or commit keeps the history.
+
+The text is plain sentences in sentence case. The first line states the current rule, because brief results show only that line. Every paragraph opens with a sentence naming its subject, because a chunk may start at any paragraph. Identifiers stay verbatim inside the sentences.
+
+A correction rewrites the entry to the current state with \`memory_learn_update\`; a factual text with an appended \`AMENDED\` section is refused. Before storing a rewrite, check it line by line against the old text, so no fact is lost.`,
+
   lifecycle: `# Lifecycle
 
 - \`memory_entity_open({asOf: "2026-04-15"})\` — point-in-time view: the observations whose validity window contained that instant.
