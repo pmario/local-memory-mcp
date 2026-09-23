@@ -1,7 +1,7 @@
 /**
  * Moving and labelling learnings without archiving them (local-memory-mcp-57k):
  * memory_learn_update changes project and category, searches can exclude tags,
- * projects and styles, and every newly written text carries the atomic/factual style.
+ * projects and styles, and learnings carry the atomic/factual style their writer declares.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -23,7 +23,7 @@ afterEach(async () => {
 
 async function store(content: string, extra: Record<string, unknown> = {}): Promise<string> {
   const { learn } = await import('./learn.js');
-  const r = await learn({ category: 'pattern', content, ...extra });
+  const r = await learn({ category: 'pattern', content, style: ['atomic', 'factual'], ...extra });
   if (!r.success) throw new Error(r.error);
   return (r.data as { id: string }).id;
 }
@@ -87,14 +87,9 @@ describe('memory_learn_update: project and category', () => {
 });
 
 describe('style: atomic and factual', () => {
-  it('marks a new learning atomic and factual', async () => {
-    const id = await store('A new finding, written to the rule.');
-    expect(JSON.parse((await row(id)).style_json)).toEqual(['atomic', 'factual']);
-  });
-
-  it('marks bulk-added learnings the same way', async () => {
+  it('stores the style declared on a bulk item', async () => {
     const { learnBulk } = await import('./learn.js');
-    const r = await learnBulk({ items: [{ category: 'pattern', content: 'bulk style target' }] });
+    const r = await learnBulk({ items: [{ category: 'pattern', content: 'bulk style target', style: ['atomic', 'factual'] }] });
     if (!r.success) throw new Error(r.error);
     const id = (r.data as { results: Array<{ id: string }> }).results[0]!.id;
     expect(JSON.parse((await row(id)).style_json)).toEqual(['atomic', 'factual']);
@@ -110,7 +105,7 @@ describe('style: atomic and factual', () => {
     const { learn } = await import('./learn.js');
     const { getDb } = await import('../db/client.js');
     for (const content of ['Claim.\n\n=== AMENDED 2026-09-08: more ===\n\nDetail.', 'Claim.\n\nAMENDED 2026-09-22: more.']) {
-      const r = await learn({ category: 'pattern', content });
+      const r = await learn({ category: 'pattern', content, style: ['atomic', 'factual'] });
       expect(r.success).toBe(false);
       if (!r.success) expect(r.code).toBe('AMENDMENT_SECTION');
     }
@@ -122,17 +117,17 @@ describe('style: atomic and factual', () => {
     expect(JSON.parse((await row(id)).style_json)).toEqual(['atomic', 'factual']);
   });
 
-  it('marks a content rewrite of a legacy entry atomic and factual', async () => {
+  it('stores the declared style on a content rewrite of a legacy entry', async () => {
     const { learnUpdate } = await import('./learn.js');
     const id = await storeLegacy('OLD STYLE ENTRY.\n\n=== AMENDED 2026-08-01 ===\n\nMore.');
-    expect((await learnUpdate({ learningId: id, content: 'Rewritten to the current state.' })).success).toBe(true);
+    expect((await learnUpdate({ learningId: id, content: 'Rewritten to the current state.', style: ['atomic', 'factual'] })).success).toBe(true);
     expect(JSON.parse((await row(id)).style_json)).toEqual(['atomic', 'factual']);
   });
 
   it('refuses a content rewrite that appends an amendment section, and leaves the row alone', async () => {
     const { learnUpdate } = await import('./learn.js');
     const id = await store('Claim: X is true.');
-    const r = await learnUpdate({ learningId: id, content: 'Claim: X is true.\n\nAMENDED 2026-09-23: only on Tuesdays.' });
+    const r = await learnUpdate({ learningId: id, content: 'Claim: X is true.\n\nAMENDED 2026-09-23: only on Tuesdays.', style: ['atomic', 'factual'] });
     expect(r.success).toBe(false);
     if (!r.success) expect(r.code).toBe('AMENDMENT_SECTION');
     expect((await row(id)).content).toBe('Claim: X is true.');

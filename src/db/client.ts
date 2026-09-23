@@ -98,6 +98,11 @@ export function getDb(): Database.Database {
   if (!learningColumns.some((c) => c.name === 'style_json')) {
     db.exec("ALTER TABLE learnings ADD COLUMN style_json TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!learningColumns.some((c) => c.name === 'split_from')) {
+    db.exec('ALTER TABLE learnings ADD COLUMN split_from TEXT');
+  }
+  // Here rather than in schema.sql, which runs before an older table has the column.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_learnings_split_from ON learnings(split_from)');
 
   // v2.0.0+: best-effort sqlite-vec hookup. Both calls return false silently
   // on unsupported platforms — no exception bubbles up to break stdio.

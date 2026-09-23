@@ -9,6 +9,7 @@
  */
 import { z } from 'zod';
 import type { ToolResult } from '../lib/types.js';
+import { STYLE_REQUIRED } from '../lib/style.js';
 
 import { sessionStart, sessionStartSchema, sessionEnd, sessionEndSchema } from './session.js';
 import {
@@ -47,6 +48,11 @@ import {
 // Empty-object schema for tools without inputs (memory_health).
 const noInputSchema = z.object({}).strict();
 
+// What the write tools say about style, following the MEMORY_REQUIRE_STYLE start switch.
+const STYLE_RULE = STYLE_REQUIRED
+  ? 'style ["atomic", "factual"] is required, passed only after checking the text against memory_guide({topic: "writing"})'
+  : 'pass style ["atomic", "factual"] only after checking the text against memory_guide({topic: "writing"}); without it the entry is stored unchecked';
+
 interface ToolDef {
   name: string;
   description: string;
@@ -69,7 +75,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn',
-    description: 'Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates. Write it atomic (one subject) and factual (all the facts, no story) as memory_guide({topic: "writing"}) describes: it is stored with style ["atomic", "factual"], and a text with an appended AMENDED section is refused.',
+    description: `Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates. Write it atomic (one subject) and factual (all the facts, no story): ${STYLE_RULE}. A factual text with an appended AMENDED, SUPERSEDED, CORRECTED, UPDATE or ADDENDUM section is refused. A part split out of another learning passes splitFrom (the hub's full id) and links the hub with [[id8]].`,
     schema: learnSchema,
     handler: (input) => learn(input as z.infer<typeof learnSchema>),
   },
@@ -87,13 +93,13 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn_update',
-    description: 'Edit a live learning (content, confidence, tags, project, category, style). project null unscopes it. Re-embeds atomically when content changes; a content rewrite is stored as style ["atomic", "factual"], follows memory_guide({topic: "writing"}), and must state the current state, not append an AMENDED section.',
+    description: `Edit a live learning (content, confidence, tags, project, category, style, splitFrom, memoryType). project null unscopes it; splitFrom null takes it out of a split. Re-embeds atomically when content changes. For a content rewrite ${STYLE_RULE}; it states the current state instead of appending a correction section. A hub's text links every part, a part's text links its hub.`,
     schema: learnUpdateSchema,
     handler: (input) => learnUpdate(input as z.infer<typeof learnUpdateSchema>),
   },
   {
     name: 'memory_learn_bulk',
-    description: 'Batch-insert many learnings in one atomic call (parallel embed, exact-duplicate skip). For restores, migrations, seeding. Each text is stored as style ["atomic", "factual"], so write it as memory_guide({topic: "writing"}) describes.',
+    description: `Batch-insert many learnings in one atomic call (parallel embed, exact-duplicate skip). For migrations and seeding; restores go through memory_import. Each item follows memory_learn: ${STYLE_RULE}; splitFrom per item.`,
     schema: learnBulkSchema,
     handler: (input) => learnBulk(input as z.infer<typeof learnBulkSchema>),
   },

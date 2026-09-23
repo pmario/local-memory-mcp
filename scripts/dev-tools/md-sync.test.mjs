@@ -138,4 +138,23 @@ describe('import-md --update against a --sync tree', () => {
 		expect(upd.stdout).toContain(`    session ${S_ENDED}: ended 2026-09-10 09:00:00`);
 		expect(upd.stdout).toContain(`NOT UPDATABLE ${L_ARCHIVED}: archived in the store but not in the tree`);
 	});
+
+	it('carries a rewrite with its tree style, a memoryType and a splitFrom (local-memory-mcp-i8n, -9z9)', () => {
+		const other = join(tmp, 'split');
+		cpSync(tree, other, { recursive: true });
+		// The other machine split this entry out of L_TO_ARCHIVE and corrected its memory type; its style stays [].
+		const used = fileEndingIn(other, 'learnings', L_USED);
+		edit(used, 'memoryType: semantic', `memoryType: episodic\nsplitFrom: ${L_TO_ARCHIVE}`);
+		edit(used, 'recalled often', `recalled often, split out of [[${L_TO_ARCHIVE.slice(0, 8)}]]`);
+		const copy = join(tmp, 'split.sqlite');
+		cpSync(store, copy);
+
+		const dry = run(IMPORT, [other, '--db', copy, '--update']);
+		expect(dry.status, dry.stderr).toBe(0);
+		expect(dry.stdout).toContain(`    ${L_USED}: content, memoryType, style, splitFrom`);
+		const apply = run(IMPORT, [other, '--db', copy, '--apply', '--update']);
+		expect(apply.status, apply.stderr + apply.stdout).toBe(0);
+		const ver = run(IMPORT, [other, '--db', copy, '--verify']);
+		expect(ver.stdout).toContain('VERIFY: perfect round-trip, 0 mismatches.');
+	});
 });

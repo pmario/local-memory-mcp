@@ -4,6 +4,14 @@
 
 Lean session start and embeddings that cover whole entries. 26 tools, 269 → **332 tests**.
 
+### Changed — a learning's style is declared, never stamped
+
+`memory_learn`, each `memory_learn_bulk` item and a content rewrite in `memory_learn_update` require `style: ["atomic", "factual"]`, which the writer passes after checking the text against `memory_guide({topic: "writing"})`; `MEMORY_REQUIRE_STYLE=0` turns the requirement off. The server no longer adds the style itself. Under `factual` it now refuses appended `SUPERSEDED`, `CORRECTED`, `UPDATE` and `ADDENDUM` sections as well as `AMENDED`, outside fenced code.
+
+### Added — splits and memory type on update
+
+A new column `split_from` records the hub a learning was split out of (`splitFrom` on learn, bulk and update). A part must link its hub as `[[id8]]`, a hub write must link every active part, and a split has one level; `memory_get` shows `splitFrom` and `parts`. `memory_learn_update` also changes `memoryType`. Both export formats carry the column.
+
 ### Changed — embeddings cover the whole entry
 
 The embedding model reads 512 tokens, about 1,740 characters. In a real store 399 of 453 learnings were longer, and their vectors covered a median 51% of the text, so vector search never saw the rest. Entries are now split at paragraphs into chunks of at most 500 tokens, and chunks after the first repeat the entry's first line. An entry ranks by its best chunk, lowered by 0.01·ln(chunk count) so that long entries gain no advantage from having more chunks.

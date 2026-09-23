@@ -79,17 +79,18 @@ Options:
                         so a tree merged from two machines leaves nothing
                         for the next export to revert:
                           learning content, confidence, tags, project,
-                          category, style (through memory_learn_update,
-                          which re-embeds a changed content);
+                          category, style, splitFrom, memoryType (through
+                          memory_learn_update, which re-embeds a changed
+                          content; a changed content carries the tree's style);
                           entity summary (memory_entity_create);
                           learning archive state, observation validTo,
                           session end (written as the tree has them).
-                        Lifecycle and style only move forward: an archived
-                        learning, superseded observation or ended session is
-                        never reopened, and no style value is removed.
-                        Anything else that differs (source, memoryType,
-                        date, entity name or type) is reported and left
-                        untouched. The dry run
+                        Lifecycle, style and splitFrom only move forward: an
+                        archived learning, superseded observation or ended
+                        session is never reopened, and no style value or
+                        splitFrom is removed except by a content rewrite.
+                        Anything else that differs (source, date, entity name
+                        or type) is reported and left untouched. The dry run
                         predicts every change; --apply --update performs
                         them (--update implies --merge); a second run finds
                         nothing to change.
@@ -358,7 +359,7 @@ const learnings = [];
 // --update and --verify must never treat an envelope DEFAULT as a tree value,
 // so remember which fields the file itself carried.
 const fieldPresence = new Map();
-const ALL_PRESENT = { confidence: true, tags: true, archived: true, usageCount: true, lastUsed: true, style: true };
+const ALL_PRESENT = { confidence: true, tags: true, archived: true, usageCount: true, lastUsed: true, style: true, splitFrom: true };
 for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 	const p = parseFile(path);
 	if (!p.ok) { skip(path, p.reason, p.data); continue; }
@@ -371,6 +372,7 @@ for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 		usageCount: f.usageCount !== undefined,
 		lastUsed: f.lastUsed !== undefined,
 		style: f.style !== undefined,
+		splitFrom: f.splitFrom !== undefined,
 	});
 	learnings.push({
 		id: lid,
@@ -391,6 +393,7 @@ for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 		lifecycleState: f.lifecycleState ?? 'active',
 		memoryType: f.memoryType ?? 'semantic',
 		style: f.style ?? [],
+		splitFrom: f.splitFrom ?? null,
 	});
 }
 
@@ -621,12 +624,16 @@ if (doUpdate && existsSync(targetDb)) {
 		if (present.tags && JSON.stringify(l.tags) !== JSON.stringify(JSON.parse(r.tags_json))) set.tags = l.tags;
 		if (orNull(l.project) !== r.project) set.project = orNull(l.project);
 		if (l.category !== r.category) set.category = l.category;
-		// A content rewrite gets its style from the server. Otherwise style only moves forward, like the lifecycle.
+		if (l.memoryType !== r.memory_type) set.memoryType = l.memoryType;
+		// A content rewrite carries the tree's style, checked where it was written. Otherwise style only moves forward, like the lifecycle.
 		const storeStyle = JSON.parse(r.style_json);
-		if (present.style && !set.content && JSON.stringify(l.style) !== JSON.stringify(storeStyle)) {
+		if (set.content) set.style = l.style;
+		else if (present.style && JSON.stringify(l.style) !== JSON.stringify(storeStyle)) {
 			if (storeStyle.every((s) => l.style.includes(s))) set.style = l.style;
 			else updateWarnings.push(`${l.id}: style ${JSON.stringify(storeStyle)} in the store would lose values to the tree's ${JSON.stringify(l.style)}; nothing removes a style`);
 		}
+		// A tree written before split_from existed carries none, so an absent value never clears the store's.
+		if (present.splitFrom && l.splitFrom !== r.split_from) set.splitFrom = l.splitFrom;
 		if (Object.keys(set).length) {
 			if (r.archived === 1) updateWarnings.push(`${l.id}: ${Object.keys(set).join(', ')} differ, but memory_learn_update cannot change an archived learning`);
 			else updates.push({ id: l.id, set });
@@ -644,7 +651,6 @@ if (doUpdate && existsSync(targetDb)) {
 		}
 		for (const [field, tree, db] of [
 			['source', l.source ?? null, r.source],
-			['memoryType', l.memoryType, r.memory_type],
 			['date', l.date, r.date],
 		]) {
 			if (tree !== db) updateWarnings.push(`${l.id}: ${field} differs (tree ${JSON.stringify(tree)}, store ${JSON.stringify(db)}); memory_learn_update cannot change it, archive-and-rewrite instead`);
@@ -782,6 +788,7 @@ function runVerify() {
 		compare('learning', l.id, 'lifecycleState', l.lifecycleState, r.lifecycle_state);
 		compare('learning', l.id, 'memoryType', l.memoryType, r.memory_type);
 		if (present.style) compare('learning', l.id, 'style', l.style, JSON.parse(r.style_json));
+		if (present.splitFrom) compare('learning', l.id, 'splitFrom', l.splitFrom, r.split_from);
 	}
 	if (envelope.learnings.length !== dbLearnings.size) { mismatches++; report(`COUNT: md has ${envelope.learnings.length} learnings, DB has ${dbLearnings.size}`); }
 	const dbDecisions = new Map(vdb.prepare('SELECT * FROM decisions').all().map((r) => [r.id, r]));
@@ -934,7 +941,8 @@ if (!existsSync(serverPath)) {
 
 const p = spawn(process.execPath, [serverPath], {
 	stdio: ['pipe', 'pipe', 'pipe'],
-	env: { ...process.env, MEMORY_DB_PATH: targetDb },
+	// A restore writes what the tree holds, so the rule for new texts (local-memory-mcp-i8n) does not apply.
+	env: { ...process.env, MEMORY_DB_PATH: targetDb, MEMORY_REQUIRE_STYLE: '0' },
 });
 let err = '';
 p.stderr.on('data', (d) => (err += d));

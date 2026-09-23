@@ -103,6 +103,15 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
     }
   });
 
+  it('the writing topic states the checked-style contract and the split shape (local-memory-mcp-i8n, -0eq)', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    for (const text of ['required', 'splitFrom', 'checklist', 'links every part']) expect(content).toContain(text);
+    for (const text of ['stamps', 'the server stores each new learning']) expect(content).not.toContain(text);
+  });
+
   it('the server instructions send a writer to that topic', async () => {
     const { INSTRUCTIONS } = await import('./instructions.js');
     expect(INSTRUCTIONS).toContain('memory_guide({topic: "writing"})');

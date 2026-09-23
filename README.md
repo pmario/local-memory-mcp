@@ -156,6 +156,7 @@ memory_search({ query: "...", mode: "vector" })    // cosine only
 - `MEMORY_EMBED_MODEL=...` — swap in a different Transformers.js feature-extraction model.
 - `MEMORY_EMBED_CACHE_DIR=...` — override the Transformers.js cache location.
 - `MEMORY_EMBED_DTYPE=fp32|fp16|q8|q4` — model quantization (default `q8`).
+- `MEMORY_REQUIRE_STYLE=0` — let `memory_learn`, `memory_learn_bulk` and content rewrites through without `style: ["atomic", "factual"]`; such entries are stored unstyled.
 
 ## Lifecycle + Reflection (v2.1.0+)
 
@@ -240,7 +241,7 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 
 ### Learnings
 
-**`memory_learn`** -- The core tool. Stores a piece of knowledge with a category and content. Categories: `pattern` (recurring success), `mistake` (what went wrong), `insight` (strategic realization), `research` (external knowledge), `architecture`, `infrastructure`, `tool`, `workflow`, `performance`, `security`. The duplicate gatekeeper checks whether the identical content is already stored. If so, it bumps the usage counter instead of creating a duplicate. To extend an existing entry rather than add a new one, use `memory_learn_update` with its id. Optional: `tags`, `confidence` (0-1), `project`, `memoryType` (episodic or semantic, auto-classified if omitted).
+**`memory_learn`** -- The core tool. Stores a piece of knowledge with a category and content. Categories: `pattern` (recurring success), `mistake` (what went wrong), `insight` (strategic realization), `research` (external knowledge), `architecture`, `infrastructure`, `tool`, `workflow`, `performance`, `security`. The duplicate gatekeeper checks whether the identical content is already stored. If so, it bumps the usage counter instead of creating a duplicate. To extend an existing entry rather than add a new one, use `memory_learn_update` with its id. Required: `style: ["atomic", "factual"]`, passed after checking the text against `memory_guide({topic: "writing"})` (see `MEMORY_REQUIRE_STYLE`). Optional: `tags`, `confidence` (0-1), `project`, `memoryType` (episodic or semantic, auto-classified if omitted), `splitFrom` (the full id of the learning this one was split out of; the text must link it as `[[id8]]`).
 
 **`memory_recall`** -- Quick search on learnings only. Pass a `query` string for keyword search, or omit it to get the most recent learnings. Good for "what did I learn about X" questions. Use `limit` to control how many results come back (default 20). `detail: "brief"` returns a headline instead of the content.
 
@@ -248,9 +249,9 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 
 **`memory_learn_archive`** *(v2.1+)* -- Soft-delete a learning. The row stays in the DB (so asOf queries that reference it still resolve) but never resurfaces in recall or search. Optional `reason` is stored on `lifecycle_state` as `archived:<reason>`. Idempotent — calling twice returns `already_archived`.
 
-**`memory_learn_update`** *(v2.1+)* -- Edit a live learning (`content` / `confidence` / `tags`). At least one field is required. Bumps `usage_count` + `last_used` so an edit counts as a touch. Re-embeds atomically when `content` changes (F4 pattern: compute outside the transaction, write inside one sync `db.transaction()`). Rejects edits to archived learnings with `code: 'ARCHIVED'`.
+**`memory_learn_update`** *(v2.1+)* -- Edit a live learning (`content` / `confidence` / `tags` / `project` / `category` / `style` / `splitFrom` / `memoryType`). At least one field is required. A content rewrite declares `style: ["atomic", "factual"]`; a hub's text links every active part and a part's text links its hub. Bumps `usage_count` + `last_used` so an edit counts as a touch. Re-embeds atomically when `content` changes (F4 pattern: compute outside the transaction, write inside one sync `db.transaction()`). Rejects edits to archived learnings with `code: 'ARCHIVED'`.
 
-**`memory_learn_bulk`** *(v2.2+)* -- Batch-insert up to 500 learnings in one atomic call. Each item takes the same fields as `memory_learn`. Exact-duplicate-only gatekeeper (no fuzzy merge) so the result is deterministic insert-or-skip; intra-batch duplicate contents collapse onto the first occurrence. Only the new contents are embedded, in one batched model forward pass. For restoring a backup, seeding a fresh DB, or migrating from another system.
+**`memory_learn_bulk`** *(v2.2+)* -- Batch-insert up to 500 learnings in one atomic call. Each item takes the same fields as `memory_learn`. Exact-duplicate-only gatekeeper (no fuzzy merge) so the result is deterministic insert-or-skip; intra-batch duplicate contents collapse onto the first occurrence. Only the new contents are embedded, in one batched model forward pass. For seeding a fresh DB or migrating from another system; a backup is restored with `memory_import`.
 
 **When to use recall vs search:** Use `recall` when you want learnings specifically. Use `search` when you want to find anything across all types, including entities and decisions.
 

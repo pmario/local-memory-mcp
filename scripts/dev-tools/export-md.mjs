@@ -115,7 +115,7 @@ const db = new Database(dbPath, { readonly: true });
 // lose data. Refuse instead, and name what changed. (A removed or renamed
 // column already fails loudly in the SELECT.)
 const EXPECTED_COLUMNS = {
-	learnings: ['id', 'date', 'category', 'content', 'project', 'tags_json', 'usage_count', 'last_used', 'confidence', 'source', 'verified', 'verified_at', 'archived', 'archived_at', 'importance', 'lifecycle_state', 'memory_type', 'style_json'],
+	learnings: ['id', 'date', 'category', 'content', 'project', 'tags_json', 'usage_count', 'last_used', 'confidence', 'source', 'verified', 'verified_at', 'archived', 'archived_at', 'importance', 'lifecycle_state', 'memory_type', 'style_json', 'split_from'],
 	decisions: ['id', 'date', 'title', 'decision', 'alternatives', 'reasoning', 'project', 'tags_json', 'confidence', 'source', 'verified', 'verified_at'],
 	entities: ['id', 'name', 'entity_type', 'created_at', 'updated_at', 'summary', 'confidence'],
 	entity_observations: ['id', 'entity_id', 'content', 'source', 'session_id', 'valid_from', 'valid_to', 'confidence', 'created_at'],
@@ -282,7 +282,7 @@ const skippedEntityIds = new Set();
 const learnings = db.prepare(
 	`SELECT id, date, category, content, project, tags_json, usage_count, last_used,
 	        confidence, source, verified, verified_at, archived, archived_at,
-	        importance, lifecycle_state, memory_type, style_json
+	        importance, lifecycle_state, memory_type, style_json, split_from
 	 FROM learnings ORDER BY date, id`
 ).all();
 for (const l of learnings) {
@@ -310,6 +310,7 @@ for (const l of learnings) {
 			lifecycleState: l.lifecycle_state,
 			memoryType: l.memory_type,
 			style: JSON.parse(l.style_json),
+			splitFrom: l.split_from,
 		}) + l.content + '\n',
 		`learning ${day} "${String(l.content).split('\n')[0].slice(0, 60)}" [${l.id}]`
 	);

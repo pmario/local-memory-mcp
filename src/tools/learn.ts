@@ -22,7 +22,17 @@ import { z } from 'zod';
 import { getDb, newId, nowIso, escapeFtsQuery } from '../db/client.js';
 import { prepareEmbedding, prepareEmbeddingBatch, writeEmbeddingSync, deleteEmbeddings, type PreparedEmbedding } from '../db/vector.js';
 import { headline } from '../lib/brief.js';
-import { DEFAULT_STYLE, AMENDMENT_ERROR, hasAmendmentSection, knownStyles, zStyle, type Style } from '../lib/style.js';
+import {
+  AMENDMENT_ERROR,
+  STYLE_REQUIRED,
+  STYLE_REQUIRED_ERROR,
+  hasAmendmentSection,
+  isChecked,
+  knownStyles,
+  zStyle,
+  zWrittenStyle,
+} from '../lib/style.js';
+import { checkHub, checkPart } from '../lib/split.js';
 import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
 
 // Exported so memory_import can validate against the SAME set the interactive
@@ -42,14 +52,10 @@ export const learnSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
   source: z.string().optional(),
   memoryType: z.enum(['episodic', 'semantic']).optional(),
-  // Added to the default atomic + factual, which every new text carries.
-  style: zStyle.optional(),
+  style: zWrittenStyle,
+  // The full id of the hub this entry was split out of.
+  splitFrom: z.string().min(1).optional(),
 });
-
-/** The style of a newly written text: the default plus any extra values asked for. */
-function writtenStyle(extra: readonly Style[] | undefined): Style[] {
-  return knownStyles([...DEFAULT_STYLE, ...(extra ?? [])]);
-}
 
 /**
  * Auto-classify memory type if not provided.
@@ -67,8 +73,12 @@ function classifyMemoryType(content: string, category: LearningCategory): Memory
 
 export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolResult> {
   const db = getDb();
-  const style = writtenStyle(input.style);
+  const style = knownStyles(input.style ?? []);
   if (style.includes('factual') && hasAmendmentSection(input.content)) return AMENDMENT_ERROR;
+  if (input.splitFrom !== undefined) {
+    const refusal = checkPart(db, null, input.splitFrom, input.content);
+    if (refusal) return refusal;
+  }
 
   // Gatekeeper: check for exact duplicate
   const exact = db
@@ -117,8 +127,8 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
   const tx = db.transaction(() => {
     db.prepare(
       `INSERT INTO learnings
-       (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json, split_from)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       nowIso(),
@@ -129,7 +139,8 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
       input.confidence ?? 0.7,
       input.source ?? null,
       memoryType,
-      JSON.stringify(style)
+      JSON.stringify(style),
+      input.splitFrom ?? null
     );
     writeEmbeddingSync(db, id, 'learning', vec);
   });
@@ -236,25 +247,28 @@ export const learnUpdateSchema = z.object({
   // null moves the learning out of every project.
   project: z.string().min(1).nullable().optional(),
   category: z.enum(LEARNING_CATEGORIES as [LearningCategory, ...LearningCategory[]]).optional(),
-  // A content rewrite always carries atomic + factual; without one, style replaces the stored value.
+  // A content rewrite must declare the style itself (checked in learnUpdate, as it depends on content).
   style: zStyle.optional(),
+  // null ends the entry's membership in a split.
+  splitFrom: z.string().min(1).nullable().optional(),
+  memoryType: z.enum(['episodic', 'semantic']).optional(),
 });
 
 export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Promise<ToolResult> {
   const db = getDb();
 
-  const fields = ['content', 'confidence', 'tags', 'project', 'category', 'style'] as const;
+  const fields = ['content', 'confidence', 'tags', 'project', 'category', 'style', 'splitFrom', 'memoryType'] as const;
   if (fields.every((f) => input[f] === undefined)) {
     return {
       success: false,
-      error: 'At least one of content, confidence, tags, project, category or style must be provided.',
+      error: 'At least one of content, confidence, tags, project, category, style, splitFrom or memoryType must be provided.',
       code: 'NOTHING_TO_UPDATE',
     };
   }
 
   const existing = db
-    .prepare('SELECT id, content, archived FROM learnings WHERE id = ?')
-    .get(input.learningId) as { id: string; content: string; archived: number } | undefined;
+    .prepare('SELECT id, content, archived, split_from FROM learnings WHERE id = ?')
+    .get(input.learningId) as { id: string; content: string; archived: number; split_from: string | null } | undefined;
 
   if (!existing) {
     return { success: false, error: 'Learning not found.', code: 'NOT_FOUND' };
@@ -277,11 +291,35 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
   const willChangeContent = input.content !== undefined && input.content !== existing.content;
   // Brief results show only the first line, which an appended amendment leaves unchanged.
   const appendedOnly = willChangeContent && (input.content as string).startsWith(existing.content);
-  const style = willChangeContent ? writtenStyle(input.style) : input.style && knownStyles(input.style);
-  if (style?.includes('factual') && hasAmendmentSection(input.content ?? existing.content)) return AMENDMENT_ERROR;
+  if (willChangeContent && STYLE_REQUIRED && !isChecked(input.style ?? [])) return STYLE_REQUIRED_ERROR;
+  // A rewrite without a style is unchecked, whatever the old text was checked as.
+  const style = willChangeContent ? knownStyles(input.style ?? []) : input.style && knownStyles(input.style);
+  const content = input.content ?? existing.content;
+  if (style?.includes('factual') && hasAmendmentSection(content)) return AMENDMENT_ERROR;
+
+  // A write that vouches for the text (a rewrite or a style) must keep the split's links, and so must naming a hub.
+  const vouches = willChangeContent || (style !== undefined && style.length > 0);
+  const hubId = input.splitFrom === undefined ? existing.split_from : input.splitFrom;
+  if (hubId !== null && (vouches || input.splitFrom !== undefined)) {
+    const refusal = checkPart(db, existing.id, hubId, content);
+    if (refusal) return refusal;
+  }
+  if (vouches) {
+    const refusal = checkHub(db, existing.id, content);
+    if (refusal) return refusal;
+  }
+
   if (style) {
     updates.push('style_json = ?');
     args.push(JSON.stringify(style));
+  }
+  if (input.splitFrom !== undefined) {
+    updates.push('split_from = ?');
+    args.push(input.splitFrom);
+  }
+  if (input.memoryType !== undefined) {
+    updates.push('memory_type = ?');
+    args.push(input.memoryType);
   }
   if (input.project !== undefined) {
     updates.push('project = ?');
@@ -381,7 +419,8 @@ export const learnBulkSchema = z.object({
         confidence: z.number().min(0).max(1).optional(),
         source: z.string().optional(),
         memoryType: z.enum(['episodic', 'semantic']).optional(),
-        style: zStyle.optional(),
+        style: zWrittenStyle,
+        splitFrom: z.string().min(1).optional(),
       })
     )
     .min(1)
@@ -395,8 +434,12 @@ type BulkPlan =
 export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise<ToolResult> {
   const db = getDb();
   // Refuse the whole batch before anything is written, like any other write failure.
-  const amended = input.items.findIndex((it) => hasAmendmentSection(it.content));
-  if (amended !== -1) return { ...AMENDMENT_ERROR, error: `Item ${amended}: ${AMENDMENT_ERROR.error}` };
+  for (const [i, it] of input.items.entries()) {
+    let refusal: { success: false; error: string; code: string } | null = null;
+    if (knownStyles(it.style ?? []).includes('factual') && hasAmendmentSection(it.content)) refusal = AMENDMENT_ERROR;
+    else if (it.splitFrom !== undefined) refusal = checkPart(db, null, it.splitFrom, it.content);
+    if (refusal) return { ...refusal, error: `Item ${i}: ${refusal.error}` };
+  }
   const exactStmt = db.prepare('SELECT id FROM learnings WHERE content = ? AND archived = 0 LIMIT 1');
 
   // Phase 1 (sync): decide insert-vs-skip per item BEFORE embedding so dups
@@ -448,8 +491,8 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
       const memoryType = it.memoryType ?? classifyMemoryType(it.content, it.category);
       db.prepare(
         `INSERT INTO learnings
-         (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json, split_from)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         p.id,
         nowIso(),
@@ -460,7 +503,8 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
         it.confidence ?? 0.7,
         it.source ?? null,
         memoryType,
-        JSON.stringify(writtenStyle(it.style))
+        JSON.stringify(knownStyles(it.style ?? [])),
+        it.splitFrom ?? null
       );
       writeEmbeddingSync(db, p.id, 'learning', vecMap.get(p.id) ?? null);
       results.push({ index: p.index, id: p.id, action: 'added' });

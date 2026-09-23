@@ -102,7 +102,7 @@ describe('chunked embedding storage', () => {
     const id = (r as { data: { id: string } }).data.id;
     expect(chunkIds(id).length).toBeGreaterThanOrEqual(2);
 
-    await learnUpdate({ learningId: id, content: 'now it is short' });
+    await learnUpdate({ learningId: id, content: 'now it is short', style: ['atomic', 'factual'] });
     expect(source(id)!.chunk_count).toBe(1);
     expect(source(id)!.source_hash).toBe(sha('now it is short'));
     expect(chunkIds(id)).toEqual([`${id}:0`]);

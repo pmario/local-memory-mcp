@@ -112,7 +112,7 @@ describe('memory_learn_bulk', () => {
     expect(learnBulkSchema.safeParse({ items: [] }).success).toBe(false);
     const tooMany = { items: Array.from({ length: 501 }, () => ({ category: 'pattern', content: 'x' })) };
     expect(learnBulkSchema.safeParse(tooMany).success).toBe(false);
-    const ok = { items: [{ category: 'pattern', content: 'x' }] };
+    const ok = { items: [{ category: 'pattern', content: 'x', style: ['atomic', 'factual'] }] };
     expect(learnBulkSchema.safeParse(ok).success).toBe(true);
   });
 });

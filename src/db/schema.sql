@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS learnings (
   importance      REAL,
   lifecycle_state TEXT NOT NULL DEFAULT 'active',
   memory_type     TEXT NOT NULL DEFAULT 'semantic', -- 'episodic' | 'semantic'
-  style_json      TEXT NOT NULL DEFAULT '[]'        -- src/lib/style.ts; stores from before it get the column in client.ts
+  style_json      TEXT NOT NULL DEFAULT '[]',       -- src/lib/style.ts; stores from before it get the column in client.ts
+  split_from      TEXT                              -- the hub of a split part, src/lib/split.ts; same migration as style_json
 );
 CREATE INDEX IF NOT EXISTS idx_learnings_project ON learnings(project);
 CREATE INDEX IF NOT EXISTS idx_learnings_category ON learnings(category);

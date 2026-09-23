@@ -57,7 +57,7 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
       .prepare(
         `SELECT id, date, category, content, project, tags_json, usage_count,
                 last_used, confidence, source, verified, verified_at,
-                archived, archived_at, importance, lifecycle_state, memory_type, style_json
+                archived, archived_at, importance, lifecycle_state, memory_type, style_json, split_from
          FROM learnings ${archivedFilter} ORDER BY date`
       )
       .all() as Array<Record<string, unknown>>
@@ -80,6 +80,7 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
     lifecycleState: r.lifecycle_state,
     memoryType: r.memory_type,
     style: parseStyle(r.style_json as string),
+    splitFrom: r.split_from,
   }));
 
   const decisions = (
@@ -378,6 +379,7 @@ const importLearningSchema = z.object({
   memoryType: z.enum(['episodic', 'semantic']).nullish(),
   // A newer exporter may know more styles: keep the known ones rather than reject the record.
   style: z.array(z.string()).nullish().transform((v) => knownStyles(v ?? [])),
+  splitFrom: zId.nullish(),
 });
 
 const importDecisionSchema = z.object({
@@ -727,8 +729,8 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO learnings
        (id, date, category, content, project, tags_json, usage_count, last_used,
         confidence, source, verified, verified_at, archived, archived_at,
-        importance, lifecycle_state, memory_type, style_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        importance, lifecycle_state, memory_type, style_json, split_from)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const l of validLearnings) {
       if (!l) { skipped.malformed++; continue; }
@@ -750,7 +752,8 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
         l.importance ?? null,
         l.lifecycleState || 'active',
         l.memoryType || 'semantic',
-        JSON.stringify(l.style)
+        JSON.stringify(l.style),
+        l.splitFrom || null
       );
       if (info.changes > 0) {
         counts.learnings++;

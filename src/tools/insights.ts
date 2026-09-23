@@ -247,7 +247,7 @@ Learnings are facts, patterns, insights that should persist across sessions.
 
   writing: `# Writing a learning: atomic and factual
 
-Write every learning atomic and factual; the server stores each new learning and each content rewrite with style ["atomic", "factual"]. The rule serves two goals: fewer tokens when an entry is read, and a better hit when it is searched. Hybrid search embeds chunks of up to 500 tokens, split at paragraph boundaries, with a model trained on human language, and keyword search needs the exact tokens.
+Write every learning atomic and factual, and declare it with style ["atomic", "factual"] only after checking the text against the checklist below. That style is required on every new text and every content rewrite, unless the server was started with MEMORY_REQUIRE_STYLE=0. The rule serves two goals: fewer tokens when an entry is read, and a better hit when it is searched. Hybrid search embeds chunks of up to 500 tokens, split at paragraph boundaries, with a model trained on human language, and keyword search needs the exact tokens.
 
 An atomic learning has one subject. Split an entry with several subjects into separate learnings and link them with [[id8]]. In one measured store, two long entries rewritten and split this way ranked first for 12 of 13 symptom queries in hybrid search; the long originals ranked first for 8, and a rewrite that still kept six subjects in one entry for 9.
 
@@ -257,21 +257,23 @@ A factual learning has the prose removed and all the information kept, with no l
 
 The text is plain sentences in sentence case. The first line states the current rule, because brief results show only that line. Every paragraph opens with a sentence naming its subject, because a chunk may start at any paragraph. Identifiers stay verbatim inside the sentences.
 
-A correction rewrites the entry to the current state with \`memory_learn_update\`; a factual text with an appended \`AMENDED\` section is refused. Before storing a rewrite, check it line by line against the old text, so no fact is lost.
+A correction rewrites the entry to the current state with \`memory_learn_update\`; a factual text with an appended \`AMENDED\`, \`SUPERSEDED\`, \`CORRECTED\`, \`UPDATE\` or \`ADDENDUM\` section is refused. Before storing a rewrite, check it line by line against the old text, so no fact is lost.
+
+The checklist before passing the style: atomic means the entry has one subject and every other subject is its own learning; factual means the prose is gone, every fact is kept, the first line states the current rule, and no correction section is appended.
 
 A learning is worth storing only when it was measured rather than assumed, outlives the session (a property of a tool, runtime or convention, not one branch's state), and is not recorded elsewhere (code, git history, CLAUDE.md or AGENTS.md). Strong candidates are a diagnostic signature, a constraint no test catches, a corrected belief, an API unlike its obvious sibling, and a maintainer ruling with its reason. "We implemented X" or "improved" without a number does not qualify.
 
 Before writing, run \`memory_search\` on the subject. When an entry already covers it, rewrite that entry instead of adding a second one, because two entries on one subject compete for the same queries and a reader may find only the older one. Skip a finding that is already recorded or true only of the session.
 
-Metadata decides how an entry is found and filtered. Always pass \`memoryType\` (semantic for what is true, episodic for what happened): without it the classifier marks every \`mistake\` entry episodic, and any other entry whose text contains today, heute, yesterday, gestern, happened, passiert, incident, vorfall, just now or gerade, and \`memory_learn_update\` cannot change it afterwards. Pick the category from the fixed list. Set \`project\` as provenance, and leave it empty for rules about the machine or about how the assistant works; \`memory_learn_update\` can change project and category later. Add tags that are useful as filters, and name the handoff or file the finding came from in \`source\`. A measured fact carries the date it was measured, beside the version and platform.
+Metadata decides how an entry is found and filtered. Always pass \`memoryType\` (semantic for what is true, episodic for what happened): without it the classifier marks every \`mistake\` entry episodic, and any other entry whose text contains today, heute, yesterday, gestern, happened, passiert, incident, vorfall, just now or gerade; \`memory_learn_update\` can correct it afterwards. Pick the category from the fixed list. Set \`project\` as provenance, and leave it empty for rules about the machine or about how the assistant works; \`memory_learn_update\` can change project and category later. Add tags that are useful as filters, and name the handoff or file the finding came from in \`source\`. A measured fact carries the date it was measured, beside the version and platform.
 
-Splitting follows an order that keeps every subject in the store: store the split-off parts first to get their ids, then rewrite the original to keep the subject a search most likely lands on, and link both directions with [[id8]]. Never rewrite the original before its parts exist.
+Splitting follows an order that keeps every subject in the store: store the split-off parts first, each with \`splitFrom\` set to the original's full id and a [[id8]] link to it, then rewrite the original to keep the subject a search most likely lands on; the original links every part. The server refuses a part that does not link its hub and a hub write that misses an active part, and a split has one level. Never rewrite the original before its parts exist.
 
 A superseded entry is archived with \`memory_learn_archive\`, with a reason that names its successor, rather than left active with a "SUPERSEDED" first line. A handoff pointer names the handoff file, its chain and sequence, the status and the next step; keep one per chain and archive the previous pointer when writing the next, and store the session's lessons as their own entries.
 
 Never store a secret: no passphrase, key, token or credential, not even a test one; name the file or script that holds or mints it instead.
 
-The style label is the writer's promise. The server stamps ["atomic", "factual"] on every text it writes but checks only for appended AMENDED sections, so everything else in this guide is the writer's job.`,
+The style label is the writer's promise. The server never adds it and checks only what it can see, appended correction sections and split links, so everything else in this guide is the writer's job.`,
 
   lifecycle: `# Lifecycle
 
@@ -279,12 +281,12 @@ The style label is the writer's promise. The server stamps ["atomic", "factual"]
 - \`memory_contradictions()\` — LLM-free scan for observation pairs with high cosine similarity but disagreeing negation or confidence. Needs sqlite-vec.
 - \`memory_observation_supersede({observationId, supersededById?})\` — retire a stale fact by setting valid_to; it stays for asOf queries. With supersededById, the newer fact's valid_from is the cutoff.
 - \`memory_learn_archive({learningId, reason?})\` — soft-delete a learning: it never resurfaces in search, \`memory_get\` still opens it.
-- \`memory_learn_update({learningId, content?, confidence?, tags?, project?, category?, style?})\` — edit a live learning; project null unscopes it; re-embeds when the content changes, and a rewritten text is stored as atomic + factual.
+- \`memory_learn_update({learningId, content?, confidence?, tags?, project?, category?, style?, splitFrom?, memoryType?})\` — edit a live learning; project null unscopes it, splitFrom null takes it out of a split; re-embeds when the content changes, and a rewrite declares its style (see topic writing).
 - \`memory_reflect({lookbackDays?: 7})\` — most-used and stale learnings, hot entities, open decisions, as data plus a markdown summary. No LLM call.`,
 
   portability: `# Portability
 
-- \`memory_learn_bulk({items: [...]})\` — insert up to 500 learnings in one atomic call (parallel embedding, exact duplicates skipped). For restores, migrations, seeding a fresh store.
+- \`memory_learn_bulk({items: [...]})\` — insert up to 500 learnings in one atomic call (parallel embedding, exact duplicates skipped). For migrations and seeding a fresh store; restores go through memory_import.
 - \`memory_export({includeSessions?, includeArchived?})\` — dump everything to a versioned JSON envelope. Embeddings are re-derived on import.
 - \`memory_import({data})\` — load an export envelope. Additive and idempotent. The same envelope also imports into the hosted tier (memory.studiomeyer.io).`,
 

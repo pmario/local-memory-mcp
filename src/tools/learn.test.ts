@@ -407,7 +407,7 @@ describe('learn_update append notice', () => {
     const { learn, learnUpdate } = await import('./learn.js');
     const created = await learn({ category: 'pattern', content: original });
     if (!created.success) throw new Error(created.error);
-    const result = await learnUpdate({ learningId: (created.data as { id: string }).id, ...change });
+    const result = await learnUpdate({ learningId: (created.data as { id: string }).id, style: ['atomic', 'factual'], ...change });
     if (!result.success) throw new Error(result.error);
     return result.data as { notice?: string };
   }
@@ -436,7 +436,7 @@ describe('learn_update', () => {
     const created = await learn({ category: 'pattern', content: 'old content under test' });
     const id = created.success ? (created.data as { id: string }).id : '';
 
-    const updated = await learnUpdate({ learningId: id, content: 'new content under test' });
+    const updated = await learnUpdate({ learningId: id, content: 'new content under test', style: ['atomic', 'factual'] });
     expect(updated.success).toBe(true);
     if (updated.success) {
       const d = updated.data as { action: string; contentChanged: boolean; reembedded: boolean };
