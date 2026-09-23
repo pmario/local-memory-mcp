@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { getDb, nowIso } from '../db/client.js';
+import { parseStyle } from '../lib/style.js';
 import type { ToolResult } from '../lib/types.js';
 
 export const getSchema = z.object({
@@ -18,6 +19,7 @@ interface LearningRow {
   content: string;
   project: string | null;
   tags_json: string;
+  style_json: string;
   confidence: number;
   memory_type: string;
   lifecycle_state: string;
@@ -82,7 +84,7 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
 
   const learnings = db
     .prepare(
-      `SELECT id, date, category, content, project, tags_json, confidence, memory_type, lifecycle_state, archived
+      `SELECT id, date, category, content, project, tags_json, style_json, confidence, memory_type, lifecycle_state, archived
        FROM learnings WHERE id IN (${placeholders})`
     )
     .all(...ids) as LearningRow[];
@@ -101,8 +103,8 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
     .all(...ids) as SessionRow[];
 
   const found = new Map<string, Record<string, unknown>>();
-  for (const { tags_json, archived, ...row } of learnings) {
-    found.set(row.id, { type: 'learning', ...row, tags: JSON.parse(tags_json), archived: archived === 1 });
+  for (const { tags_json, style_json, archived, ...row } of learnings) {
+    found.set(row.id, { type: 'learning', ...row, tags: JSON.parse(tags_json), style: parseStyle(style_json), archived: archived === 1 });
   }
   for (const { tags_json, ...row } of decisions) {
     found.set(row.id, { type: 'decision', ...row, tags: JSON.parse(tags_json) });

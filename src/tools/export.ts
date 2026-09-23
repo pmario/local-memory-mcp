@@ -32,6 +32,7 @@ import { getDb, nowIso } from '../db/client.js';
 import { decisionEmbeddingText, prepareEmbeddingBatch, writeEmbeddingSync, type PreparedEmbedding } from '../db/vector.js';
 import { LEARNING_CATEGORIES } from './learn.js';
 import { logger } from '../lib/logger.js';
+import { knownStyles, parseStyle } from '../lib/style.js';
 import type { ToolResult, LearningCategory } from '../lib/types.js';
 
 const EXPORT_FORMAT = 'studiomeyer-memory-export';
@@ -56,7 +57,7 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
       .prepare(
         `SELECT id, date, category, content, project, tags_json, usage_count,
                 last_used, confidence, source, verified, verified_at,
-                archived, archived_at, importance, lifecycle_state, memory_type
+                archived, archived_at, importance, lifecycle_state, memory_type, style_json
          FROM learnings ${archivedFilter} ORDER BY date`
       )
       .all() as Array<Record<string, unknown>>
@@ -78,6 +79,7 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
     importance: r.importance,
     lifecycleState: r.lifecycle_state,
     memoryType: r.memory_type,
+    style: parseStyle(r.style_json as string),
   }));
 
   const decisions = (
@@ -374,6 +376,8 @@ const importLearningSchema = z.object({
   importance: z.number().min(0).max(1).nullish(),
   lifecycleState: zLifecycleState,
   memoryType: z.enum(['episodic', 'semantic']).nullish(),
+  // A newer exporter may know more styles: keep the known ones rather than reject the record.
+  style: z.array(z.string()).nullish().transform((v) => knownStyles(v ?? [])),
 });
 
 const importDecisionSchema = z.object({
@@ -723,8 +727,8 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO learnings
        (id, date, category, content, project, tags_json, usage_count, last_used,
         confidence, source, verified, verified_at, archived, archived_at,
-        importance, lifecycle_state, memory_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        importance, lifecycle_state, memory_type, style_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const l of validLearnings) {
       if (!l) { skipped.malformed++; continue; }
@@ -745,7 +749,8 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
         l.archivedAt || null,
         l.importance ?? null,
         l.lifecycleState || 'active',
-        l.memoryType || 'semantic'
+        l.memoryType || 'semantic',
+        JSON.stringify(l.style)
       );
       if (info.changes > 0) {
         counts.learnings++;

@@ -33,6 +33,7 @@ import { getDb, escapeFtsQuery } from '../db/client.js';
 import { isVectorEnabled } from '../db/vector.js';
 import { embedQuery, EMBEDDING_DIM } from '../lib/embed.js';
 import { headline } from '../lib/brief.js';
+import { zStyle } from '../lib/style.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── Ranking-boost tunables ───────────────────────────
@@ -91,6 +92,12 @@ export const searchSchema = z.object({
   // contains ANY of the given tags (learnings/decisions only).
   project: z.string().min(1).optional(),
   tags: z.array(z.string().min(1)).min(1).optional(),
+  // Exclusions drop matching learnings and decisions and leave entities and observations alone.
+  excludeProjects: z.array(z.string().min(1)).min(1).optional(),
+  excludeTags: z.array(z.string().min(1)).min(1).optional(),
+  // Only learnings carry a style, so `style` returns learnings only, like `tags` returns learnings and decisions.
+  style: zStyle.min(1).optional(),
+  excludeStyle: zStyle.min(1).optional(),
   // v2.3.0 ranking-boost overrides (all optional, conservative defaults).
   ranking: z
     .object({
@@ -128,10 +135,13 @@ interface SearchRow {
  * tags uses json_each (json1 is compiled into better-sqlite3) so a tag match is
  * exact array-membership, not a fragile LIKE substring.
  */
-function buildScopeClause(
-  project: string | undefined,
-  tags: string[] | undefined
-): { clause: string; args: unknown[] } {
+type Scope = Pick<
+  z.infer<typeof searchSchema>,
+  'project' | 'tags' | 'excludeProjects' | 'excludeTags' | 'style' | 'excludeStyle'
+>;
+
+function buildScopeClause(scope: Scope): { clause: string; args: unknown[] } {
+  const { project, tags } = scope;
   const parts: string[] = [];
   const args: unknown[] = [];
 
@@ -154,6 +164,37 @@ function buildScopeClause(
     args.push(...tags, ...tags);
   }
 
+  const has = (alias: string, column: string, values: string[]) =>
+    `EXISTS (SELECT 1 FROM json_each(${alias}.${column}) WHERE value IN (${values.map(() => '?').join(',')}))`;
+
+  if (scope.excludeProjects) {
+    const ph = scope.excludeProjects.map(() => '?').join(',');
+    // IS NOT NULL keeps the NOT from turning an unscoped row's NULL comparison into an exclusion.
+    parts.push(`NOT (
+      (search_fts.content_type = 'learning' AND l.project IS NOT NULL AND l.project IN (${ph}))
+      OR (search_fts.content_type = 'decision' AND d.project IS NOT NULL AND d.project IN (${ph}))
+    )`);
+    args.push(...scope.excludeProjects, ...scope.excludeProjects);
+  }
+
+  if (scope.excludeTags) {
+    parts.push(`NOT (
+      (search_fts.content_type = 'learning' AND ${has('l', 'tags_json', scope.excludeTags)})
+      OR (search_fts.content_type = 'decision' AND ${has('d', 'tags_json', scope.excludeTags)})
+    )`);
+    args.push(...scope.excludeTags, ...scope.excludeTags);
+  }
+
+  if (scope.style) {
+    parts.push(`(search_fts.content_type = 'learning' AND ${has('l', 'style_json', scope.style)})`);
+    args.push(...scope.style);
+  }
+
+  if (scope.excludeStyle) {
+    parts.push(`NOT (search_fts.content_type = 'learning' AND ${has('l', 'style_json', scope.excludeStyle)})`);
+    args.push(...scope.excludeStyle);
+  }
+
   return { clause: parts.length > 0 ? `AND ${parts.join(' AND ')}` : '', args };
 }
 
@@ -171,8 +212,7 @@ function ftsSearch(
   query: string,
   types: string[] | undefined,
   limit: number,
-  project: string | undefined,
-  tags: string[] | undefined
+  scopeFilter: Scope
 ): SearchRow[] {
   const db = getDb();
   const fts = escapeFtsQuery(query);
@@ -182,7 +222,7 @@ function ftsSearch(
       ? `AND search_fts.content_type IN (${types.map(() => '?').join(',')})`
       : '';
 
-  const scope = buildScopeClause(project, tags);
+  const scope = buildScopeClause(scopeFilter);
 
   // Two visibility gates, mirroring how the live entity views work:
   //   - archived learnings (archived = 1) never surface.
@@ -256,8 +296,7 @@ function vectorSearch(
   vector: Float32Array,
   types: string[] | undefined,
   limit: number,
-  project: string | undefined,
-  tags: string[] | undefined
+  scope: Scope
 ): SearchRow[] {
   const db = getDb();
 
@@ -286,7 +325,7 @@ function vectorSearch(
 
   // The scope predicate is written against `search_fts.*` aliases; the vector
   // query exposes the FTS row as `sfts`, so rewrite the alias for this leg.
-  const scopeRaw = buildScopeClause(project, tags);
+  const scopeRaw = buildScopeClause(scope);
   const scopeClause = scopeRaw.clause.replace(/search_fts\./g, 'sfts.');
 
   // vec0 returns L2 distance, which for unit vectors is sqrt(2 * cosine distance). The chunk id's
@@ -445,6 +484,14 @@ export async function search(input: z.infer<typeof searchSchema>): Promise<ToolR
   const requestedMode = input.mode ?? 'hybrid';
   const ranking = resolveRanking(input.ranking);
   const { project, tags } = input;
+  const scope: Scope = {
+    project,
+    tags,
+    excludeProjects: input.excludeProjects,
+    excludeTags: input.excludeTags,
+    style: input.style,
+    excludeStyle: input.excludeStyle,
+  };
 
   try {
     // Resolve effective mode based on what's actually available at runtime.
@@ -473,20 +520,20 @@ export async function search(input: z.infer<typeof searchSchema>): Promise<ToolR
 
     let rows: SearchRow[];
     if (effectiveMode === 'fts') {
-      rows = ftsSearch(input.query, input.types, limit, project, tags);
+      rows = ftsSearch(input.query, input.types, limit, scope);
     } else if (effectiveMode === 'vector' && queryVector) {
-      rows = vectorSearch(queryVector, input.types, limit, project, tags);
+      rows = vectorSearch(queryVector, input.types, limit, scope);
     } else if (effectiveMode === 'hybrid' && queryVector) {
       // Pull a wider candidate pool from each ranker than `limit`, so RRF has
       // enough overlap to be meaningful. 50 is the value Alex Garcia uses in
       // the canonical hybrid-search recipe.
       const candidatePool = Math.max(limit * 3, 50);
-      const ftsRows = ftsSearch(input.query, input.types, candidatePool, project, tags);
-      const vecRows = vectorSearch(queryVector, input.types, candidatePool, project, tags);
+      const ftsRows = ftsSearch(input.query, input.types, candidatePool, scope);
+      const vecRows = vectorSearch(queryVector, input.types, candidatePool, scope);
       rows = reciprocalRankFusion([ftsRows, vecRows], 60, limit, ranking);
     } else {
       // Defensive: should be unreachable, but if state diverges we degrade.
-      rows = ftsSearch(input.query, input.types, limit, project, tags);
+      rows = ftsSearch(input.query, input.types, limit, scope);
     }
 
     // Trim the internal ranking-signal columns from the public payload — they
@@ -508,6 +555,10 @@ export async function search(input: z.infer<typeof searchSchema>): Promise<ToolR
         requestedMode,
         ...(project ? { project } : {}),
         ...(tags && tags.length > 0 ? { tags } : {}),
+        ...(scope.excludeProjects ? { excludeProjects: scope.excludeProjects } : {}),
+        ...(scope.excludeTags ? { excludeTags: scope.excludeTags } : {}),
+        ...(scope.style ? { style: scope.style } : {}),
+        ...(scope.excludeStyle ? { excludeStyle: scope.excludeStyle } : {}),
         ...(downgradeReason ? { notice: downgradeReason } : {}),
       },
       message: `${results.length} results for "${input.query}" (mode: ${effectiveMode}${downgradeReason ? `, requested ${requestedMode}` : ''}).`,

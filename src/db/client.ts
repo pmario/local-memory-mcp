@@ -93,6 +93,12 @@ export function getDb(): Database.Database {
   const schema = readFileSync(schemaPath, 'utf-8');
   db.exec(schema);
 
+  // CREATE TABLE IF NOT EXISTS leaves an older learnings table as it was, and SQLite has no ADD COLUMN IF NOT EXISTS.
+  const learningColumns = db.prepare('PRAGMA table_info(learnings)').all() as Array<{ name: string }>;
+  if (!learningColumns.some((c) => c.name === 'style_json')) {
+    db.exec("ALTER TABLE learnings ADD COLUMN style_json TEXT NOT NULL DEFAULT '[]'");
+  }
+
   // v2.0.0+: best-effort sqlite-vec hookup. Both calls return false silently
   // on unsupported platforms — no exception bubbles up to break stdio.
   if (loadVecExtension(db)) {

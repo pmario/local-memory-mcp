@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { getDb } from '../db/client.js';
 import { vectorStatus } from '../db/vector.js';
 import { embedMode, embedModelId, EMBEDDING_DIM } from '../lib/embed.js';
+import { STYLES } from '../lib/style.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── insights ────────────────────────────────────────
@@ -81,6 +82,23 @@ export function health(): ToolResult {
   const embeddingsCount = vec.enabled ? count('embedding_sources') : 0;
   const chunksCount = vec.enabled ? count('embedding_chunks') : 0;
 
+  // How far the rewrite to the atomic + factual rule has got, and the next candidates.
+  const styleCount = (value: string) =>
+    (db.prepare('SELECT COUNT(*) AS c FROM learnings l WHERE archived = 0 AND EXISTS (SELECT 1 FROM json_each(l.style_json) WHERE value = ?)').get(value) as { c: number }).c;
+  const styles = {
+    ...Object.fromEntries(STYLES.map((s) => [s, styleCount(s)])),
+    none: (db.prepare("SELECT COUNT(*) AS c FROM learnings WHERE archived = 0 AND json_array_length(style_json) = 0").get() as { c: number }).c,
+    longestWithoutFactual: (
+      db
+        .prepare(
+          `SELECT substr(id, 1, 8) AS id8, length(content) AS chars FROM learnings l
+           WHERE archived = 0 AND NOT EXISTS (SELECT 1 FROM json_each(l.style_json) WHERE value = 'factual')
+           ORDER BY chars DESC LIMIT 5`
+        )
+        .all() as Array<{ id8: string; chars: number }>
+    ).map((r) => [r.id8, r.chars]),
+  };
+
   return {
     success: true,
     data: {
@@ -100,6 +118,7 @@ export function health(): ToolResult {
         mode: embedMode(),
         model: embedModelId(),
       },
+      styles,
     },
     message: integrity === 'ok'
       ? `All healthy. Hybrid: ${vec.enabled && embedMode() !== 'disabled' ? 'on' : 'off (FTS5-only)'}.`
@@ -232,7 +251,7 @@ Learnings are facts, patterns, insights that should persist across sessions.
 - \`memory_contradictions()\` — LLM-free scan for observation pairs with high cosine similarity but disagreeing negation or confidence. Needs sqlite-vec.
 - \`memory_observation_supersede({observationId, supersededById?})\` — retire a stale fact by setting valid_to; it stays for asOf queries. With supersededById, the newer fact's valid_from is the cutoff.
 - \`memory_learn_archive({learningId, reason?})\` — soft-delete a learning: it never resurfaces in search, \`memory_get\` still opens it.
-- \`memory_learn_update({learningId, content?, confidence?, tags?})\` — edit a live learning; re-embeds when the content changes.
+- \`memory_learn_update({learningId, content?, confidence?, tags?, project?, category?, style?})\` — edit a live learning; project null unscopes it; re-embeds when the content changes, and a rewritten text is stored as atomic + factual.
 - \`memory_reflect({lookbackDays?: 7})\` — most-used and stale learnings, hot entities, open decisions, as data plus a markdown summary. No LLM call.`,
 
   portability: `# Portability

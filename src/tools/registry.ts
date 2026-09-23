@@ -69,13 +69,13 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn',
-    description: 'Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates.',
+    description: 'Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates. Write it atomic (one subject) and factual (all the facts, no story): it is stored with style ["atomic", "factual"], and a text with an appended AMENDED section is refused.',
     schema: learnSchema,
     handler: (input) => learn(input as z.infer<typeof learnSchema>),
   },
   {
     name: 'memory_recall',
-    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags scoping. Omit query for most-recent. detail: brief returns headlines instead of content.',
+    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags/style scoping and excludeProjects/excludeTags/excludeStyle. Omit query for most-recent. detail: brief returns headlines instead of content.',
     schema: recallSchema,
     handler: (input) => recall(input as z.infer<typeof recallSchema>),
   },
@@ -87,7 +87,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn_update',
-    description: 'Edit a live learning (content, confidence, tags). Re-embeds atomically when content changes.',
+    description: 'Edit a live learning (content, confidence, tags, project, category, style). project null unscopes it. Re-embeds atomically when content changes; a content rewrite is stored as style ["atomic", "factual"] and must state the current state, not append an AMENDED section.',
     schema: learnUpdateSchema,
     handler: (input) => learnUpdate(input as z.infer<typeof learnUpdateSchema>),
   },
@@ -99,7 +99,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_search',
-    description: 'Unified hybrid search across learnings, decisions, entities, and observations (FTS5 BM25 + vector cosine fused with RRF). mode: fts|vector|hybrid (default hybrid). Optional project/tags scoping. detail: brief returns headlines for learnings and decisions; open them with memory_get.',
+    description: 'Unified hybrid search across learnings, decisions, entities, and observations (FTS5 BM25 + vector cosine fused with RRF). mode: fts|vector|hybrid (default hybrid). Optional project/tags/style scoping and excludeProjects/excludeTags/excludeStyle. detail: brief returns headlines for learnings and decisions; open them with memory_get.',
     schema: searchSchema,
     handler: (input) => search(input as z.infer<typeof searchSchema>),
   },
@@ -207,7 +207,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_health',
-    description: 'SQLite integrity check + page-count + DB-size + WAL status. No input.',
+    description: 'SQLite integrity check + page-count + DB-size + WAL status, plus active learnings per style and the longest ones not yet factual. No input.',
     schema: noInputSchema,
     handler: () => health(),
   },
@@ -242,6 +242,11 @@ function zodToJsonSchema(schema: z.ZodTypeAny): JsonSchema {
 
   if (def.typeName === 'ZodOptional' || def.typeName === 'ZodDefault') {
     return zodToJsonSchema((schema as unknown as { _def: { innerType: z.ZodTypeAny } })._def.innerType);
+  }
+
+  if (def.typeName === 'ZodNullable') {
+    const inner = zodToJsonSchema((schema as unknown as { _def: { innerType: z.ZodTypeAny } })._def.innerType);
+    return { ...inner, type: [inner.type, 'null'] };
   }
 
   // A .refine()/.transform() wrapper, e.g. the date strings of entity_open and

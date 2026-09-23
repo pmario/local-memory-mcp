@@ -413,7 +413,7 @@ describe('learn_update append notice', () => {
   }
 
   it('tells the caller to check the first line when content was only appended', async () => {
-    const data = await update('Claim: X is true.', { content: 'Claim: X is true.\n\nAMENDED: only on Tuesdays.' });
+    const data = await update('Claim: X is true.', { content: 'Claim: X is true.\n\nOnly on Tuesdays.' });
     expect(data.notice).toContain('first line');
   });
 

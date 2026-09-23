@@ -78,16 +78,18 @@ Options:
   --update              also bring EXISTING records up to the tree's state,
                         so a tree merged from two machines leaves nothing
                         for the next export to revert:
-                          learning content, confidence, tags (through
-                          memory_learn_update, which re-embeds);
+                          learning content, confidence, tags, project,
+                          category, style (through memory_learn_update,
+                          which re-embeds a changed content);
                           entity summary (memory_entity_create);
                           learning archive state, observation validTo,
                           session end (written as the tree has them).
-                        Lifecycle only moves forward: an archived learning,
-                        superseded observation or ended session is never
-                        reopened. Anything else that differs (category,
-                        project, source, memoryType, date, entity name or
-                        type) is reported and left untouched. The dry run
+                        Lifecycle and style only move forward: an archived
+                        learning, superseded observation or ended session is
+                        never reopened, and no style value is removed.
+                        Anything else that differs (source, memoryType,
+                        date, entity name or type) is reported and left
+                        untouched. The dry run
                         predicts every change; --apply --update performs
                         them (--update implies --merge); a second run finds
                         nothing to change.
@@ -356,7 +358,7 @@ const learnings = [];
 // --update and --verify must never treat an envelope DEFAULT as a tree value,
 // so remember which fields the file itself carried.
 const fieldPresence = new Map();
-const ALL_PRESENT = { confidence: true, tags: true, archived: true, usageCount: true, lastUsed: true };
+const ALL_PRESENT = { confidence: true, tags: true, archived: true, usageCount: true, lastUsed: true, style: true };
 for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 	const p = parseFile(path);
 	if (!p.ok) { skip(path, p.reason, p.data); continue; }
@@ -368,6 +370,7 @@ for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 		archived: f.archived !== undefined,
 		usageCount: f.usageCount !== undefined,
 		lastUsed: f.lastUsed !== undefined,
+		style: f.style !== undefined,
 	});
 	learnings.push({
 		id: lid,
@@ -387,6 +390,7 @@ for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 		importance: f.importance ?? null,
 		lifecycleState: f.lifecycleState ?? 'active',
 		memoryType: f.memoryType ?? 'semantic',
+		style: f.style ?? [],
 	});
 }
 
@@ -615,6 +619,14 @@ if (doUpdate && existsSync(targetDb)) {
 		if (l.content !== r.content) set.content = l.content;
 		if (present.confidence && l.confidence !== r.confidence) set.confidence = l.confidence;
 		if (present.tags && JSON.stringify(l.tags) !== JSON.stringify(JSON.parse(r.tags_json))) set.tags = l.tags;
+		if (orNull(l.project) !== r.project) set.project = orNull(l.project);
+		if (l.category !== r.category) set.category = l.category;
+		// A content rewrite gets its style from the server. Otherwise style only moves forward, like the lifecycle.
+		const storeStyle = JSON.parse(r.style_json);
+		if (present.style && !set.content && JSON.stringify(l.style) !== JSON.stringify(storeStyle)) {
+			if (storeStyle.every((s) => l.style.includes(s))) set.style = l.style;
+			else updateWarnings.push(`${l.id}: style ${JSON.stringify(storeStyle)} in the store would lose values to the tree's ${JSON.stringify(l.style)}; nothing removes a style`);
+		}
 		if (Object.keys(set).length) {
 			if (r.archived === 1) updateWarnings.push(`${l.id}: ${Object.keys(set).join(', ')} differ, but memory_learn_update cannot change an archived learning`);
 			else updates.push({ id: l.id, set });
@@ -631,8 +643,6 @@ if (doUpdate && existsSync(targetDb)) {
 			}
 		}
 		for (const [field, tree, db] of [
-			['category', l.category, r.category],
-			['project', l.project ?? null, r.project],
 			['source', l.source ?? null, r.source],
 			['memoryType', l.memoryType, r.memory_type],
 			['date', l.date, r.date],
@@ -771,6 +781,7 @@ function runVerify() {
 		compare('learning', l.id, 'importance', l.importance, r.importance);
 		compare('learning', l.id, 'lifecycleState', l.lifecycleState, r.lifecycle_state);
 		compare('learning', l.id, 'memoryType', l.memoryType, r.memory_type);
+		if (present.style) compare('learning', l.id, 'style', l.style, JSON.parse(r.style_json));
 	}
 	if (envelope.learnings.length !== dbLearnings.size) { mismatches++; report(`COUNT: md has ${envelope.learnings.length} learnings, DB has ${dbLearnings.size}`); }
 	const dbDecisions = new Map(vdb.prepare('SELECT * FROM decisions').all().map((r) => [r.id, r]));

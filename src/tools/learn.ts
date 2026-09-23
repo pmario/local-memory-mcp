@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { getDb, newId, nowIso, escapeFtsQuery } from '../db/client.js';
 import { prepareEmbedding, prepareEmbeddingBatch, writeEmbeddingSync, deleteEmbeddings, type PreparedEmbedding } from '../db/vector.js';
 import { headline } from '../lib/brief.js';
+import { DEFAULT_STYLE, AMENDMENT_ERROR, hasAmendmentSection, knownStyles, zStyle, type Style } from '../lib/style.js';
 import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
 
 // Exported so memory_import can validate against the SAME set the interactive
@@ -41,7 +42,14 @@ export const learnSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
   source: z.string().optional(),
   memoryType: z.enum(['episodic', 'semantic']).optional(),
+  // Added to the default atomic + factual, which every new text carries.
+  style: zStyle.optional(),
 });
+
+/** The style of a newly written text: the default plus any extra values asked for. */
+function writtenStyle(extra: readonly Style[] | undefined): Style[] {
+  return knownStyles([...DEFAULT_STYLE, ...(extra ?? [])]);
+}
 
 /**
  * Auto-classify memory type if not provided.
@@ -59,6 +67,8 @@ function classifyMemoryType(content: string, category: LearningCategory): Memory
 
 export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolResult> {
   const db = getDb();
+  const style = writtenStyle(input.style);
+  if (style.includes('factual') && hasAmendmentSection(input.content)) return AMENDMENT_ERROR;
 
   // Gatekeeper: check for exact duplicate
   const exact = db
@@ -107,8 +117,8 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
   const tx = db.transaction(() => {
     db.prepare(
       `INSERT INTO learnings
-       (id, date, category, content, project, tags_json, confidence, source, memory_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       nowIso(),
@@ -118,7 +128,8 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
       JSON.stringify(input.tags ?? []),
       input.confidence ?? 0.7,
       input.source ?? null,
-      memoryType
+      memoryType,
+      JSON.stringify(style)
     );
     writeEmbeddingSync(db, id, 'learning', vec);
   });
@@ -222,15 +233,21 @@ export const learnUpdateSchema = z.object({
   content: z.string().min(1).max(10000).optional(),
   confidence: z.number().min(0).max(1).optional(),
   tags: z.array(z.string()).optional(),
+  // null moves the learning out of every project.
+  project: z.string().min(1).nullable().optional(),
+  category: z.enum(LEARNING_CATEGORIES as [LearningCategory, ...LearningCategory[]]).optional(),
+  // A content rewrite always carries atomic + factual; without one, style replaces the stored value.
+  style: zStyle.optional(),
 });
 
 export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Promise<ToolResult> {
   const db = getDb();
 
-  if (input.content === undefined && input.confidence === undefined && input.tags === undefined) {
+  const fields = ['content', 'confidence', 'tags', 'project', 'category', 'style'] as const;
+  if (fields.every((f) => input[f] === undefined)) {
     return {
       success: false,
-      error: 'At least one of content, confidence, or tags must be provided.',
+      error: 'At least one of content, confidence, tags, project, category or style must be provided.',
       code: 'NOTHING_TO_UPDATE',
     };
   }
@@ -260,6 +277,20 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
   const willChangeContent = input.content !== undefined && input.content !== existing.content;
   // Brief results show only the first line, which an appended amendment leaves unchanged.
   const appendedOnly = willChangeContent && (input.content as string).startsWith(existing.content);
+  const style = willChangeContent ? writtenStyle(input.style) : input.style && knownStyles(input.style);
+  if (style?.includes('factual') && hasAmendmentSection(input.content ?? existing.content)) return AMENDMENT_ERROR;
+  if (style) {
+    updates.push('style_json = ?');
+    args.push(JSON.stringify(style));
+  }
+  if (input.project !== undefined) {
+    updates.push('project = ?');
+    args.push(input.project);
+  }
+  if (input.category !== undefined) {
+    updates.push('category = ?');
+    args.push(input.category);
+  }
   if (input.content !== undefined) {
     updates.push('content = ?');
     args.push(input.content);
@@ -350,6 +381,7 @@ export const learnBulkSchema = z.object({
         confidence: z.number().min(0).max(1).optional(),
         source: z.string().optional(),
         memoryType: z.enum(['episodic', 'semantic']).optional(),
+        style: zStyle.optional(),
       })
     )
     .min(1)
@@ -362,6 +394,9 @@ type BulkPlan =
 
 export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise<ToolResult> {
   const db = getDb();
+  // Refuse the whole batch before anything is written, like any other write failure.
+  const amended = input.items.findIndex((it) => hasAmendmentSection(it.content));
+  if (amended !== -1) return { ...AMENDMENT_ERROR, error: `Item ${amended}: ${AMENDMENT_ERROR.error}` };
   const exactStmt = db.prepare('SELECT id FROM learnings WHERE content = ? AND archived = 0 LIMIT 1');
 
   // Phase 1 (sync): decide insert-vs-skip per item BEFORE embedding so dups
@@ -413,8 +448,8 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
       const memoryType = it.memoryType ?? classifyMemoryType(it.content, it.category);
       db.prepare(
         `INSERT INTO learnings
-         (id, date, category, content, project, tags_json, confidence, source, memory_type)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         p.id,
         nowIso(),
@@ -424,7 +459,8 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
         JSON.stringify(it.tags ?? []),
         it.confidence ?? 0.7,
         it.source ?? null,
-        memoryType
+        memoryType,
+        JSON.stringify(writtenStyle(it.style))
       );
       writeEmbeddingSync(db, p.id, 'learning', vecMap.get(p.id) ?? null);
       results.push({ index: p.index, id: p.id, action: 'added' });
@@ -452,6 +488,11 @@ export const recallSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
   project: z.string().min(1).optional(),
   tags: z.array(z.string().min(1)).min(1).optional(),
+  excludeProjects: z.array(z.string().min(1)).min(1).optional(),
+  excludeTags: z.array(z.string().min(1)).min(1).optional(),
+  // style matches learnings carrying ANY of the values, excludeStyle drops those carrying any.
+  style: zStyle.min(1).optional(),
+  excludeStyle: zStyle.min(1).optional(),
   // brief swaps content for a headline; memory_get opens the full row.
   detail: z.enum(['brief', 'full']).optional(),
 });
@@ -477,10 +518,19 @@ function recallScopeClause(
     parts.push(`${col}project = ?`);
     args.push(input.project);
   }
-  if (input.tags && input.tags.length > 0) {
-    const ph = input.tags.map(() => '?').join(',');
-    parts.push(`EXISTS (SELECT 1 FROM json_each(${col}tags_json) WHERE value IN (${ph}))`);
-    args.push(...input.tags);
+  const member = (column: string, values: string[] | undefined, negate: boolean) => {
+    if (!values || values.length === 0) return;
+    const ph = values.map(() => '?').join(',');
+    parts.push(`${negate ? 'NOT ' : ''}EXISTS (SELECT 1 FROM json_each(${col}${column}) WHERE value IN (${ph}))`);
+    args.push(...values);
+  };
+  member('tags_json', input.tags, false);
+  member('tags_json', input.excludeTags, true);
+  member('style_json', input.style, false);
+  member('style_json', input.excludeStyle, true);
+  if (input.excludeProjects) {
+    parts.push(`(${col}project IS NULL OR ${col}project NOT IN (${input.excludeProjects.map(() => '?').join(',')}))`);
+    args.push(...input.excludeProjects);
   }
   return { clause: parts.length > 0 ? `AND ${parts.join(' AND ')}` : '', args };
 }
