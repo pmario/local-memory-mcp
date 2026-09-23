@@ -397,6 +397,30 @@ for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 	});
 }
 
+// Earlier versions of learnings (local-memory-mcp-mnb): immutable, so the import only ever adds them.
+const learningsHistory = [];
+for (const path of listMd('learnings-history')) {
+	const p = parseFile(path);
+	if (!p.ok) { skip(path, p.reason, p.data); continue; }
+	const { fields: f, body } = p;
+	learningsHistory.push({
+		id: ensureId(path, f),
+		learningId: f.learningId,
+		category: f.category,
+		content: body,
+		project: f.project ?? null,
+		tags: f.tags ?? [],
+		confidence: f.confidence ?? 0.7,
+		memoryType: f.memoryType ?? 'semantic',
+		style: f.style ?? [],
+		splitFrom: f.splitFrom ?? null,
+		archived: f.archived ?? 0,
+		lifecycleState: f.lifecycleState ?? 'active',
+		recordedAt: f.recordedAt,
+		expiredAt: f.expiredAt,
+	});
+}
+
 const decisions = [];
 for (const path of listMd('decisions')) {
 	const p = parseFile(path);
@@ -541,10 +565,11 @@ let envelope = {
 	exportedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
 	source: 'import-md.mjs',
 	schemaVersion: treeSchemaVersion ?? 'unknown',
-	counts: { learnings: learnings.length, decisions: decisions.length, entities: entities.length, observations: observations.length, relations: relations.length, sessions: sessions.length },
+	counts: { learnings: learnings.length, learningsHistory: learningsHistory.length, decisions: decisions.length, entities: entities.length, observations: observations.length, relations: relations.length, sessions: sessions.length },
 	profile,
 	goal,
 	learnings,
+	learningsHistory,
 	decisions,
 	entities,
 	observations,
@@ -791,6 +816,24 @@ function runVerify() {
 		if (present.splitFrom) compare('learning', l.id, 'splitFrom', l.splitFrom, r.split_from);
 	}
 	if (envelope.learnings.length !== dbLearnings.size) { mismatches++; report(`COUNT: md has ${envelope.learnings.length} learnings, DB has ${dbLearnings.size}`); }
+	const hasHistory = vdb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learnings_history'").get();
+	const dbHistory = new Map(hasHistory ? vdb.prepare('SELECT * FROM learnings_history').all().map((r) => [r.id, r]) : []);
+	const treeHistory = envelope.learningsHistory ?? [];
+	for (const h of treeHistory) {
+		const r = dbHistory.get(h.id);
+		if (!r) { mismatches++; report(`MISSING in DB: learning version ${h.id}`); continue; }
+		compare('learning version', h.id, 'learningId', h.learningId, r.learning_id);
+		compare('learning version', h.id, 'content', h.content, r.content);
+		compare('learning version', h.id, 'category', h.category, r.category);
+		compare('learning version', h.id, 'project', h.project, r.project);
+		compare('learning version', h.id, 'tags', h.tags, JSON.parse(r.tags_json));
+		compare('learning version', h.id, 'style', h.style, JSON.parse(r.style_json));
+		compare('learning version', h.id, 'splitFrom', h.splitFrom, r.split_from);
+		compare('learning version', h.id, 'archived', h.archived, r.archived);
+		compare('learning version', h.id, 'recordedAt', h.recordedAt, r.recorded_at);
+		compare('learning version', h.id, 'expiredAt', h.expiredAt, r.expired_at);
+	}
+	if (treeHistory.length !== dbHistory.size) { mismatches++; report(`COUNT: md has ${treeHistory.length} learning versions, DB has ${dbHistory.size}`); }
 	const dbDecisions = new Map(vdb.prepare('SELECT * FROM decisions').all().map((r) => [r.id, r]));
 	for (const d of envelope.decisions) {
 		const r = dbDecisions.get(d.id);
@@ -871,13 +914,15 @@ if (envelopeOnly) process.exit(process.exitCode ?? 0);
 
 if (!apply) {
 	const exists = existsSync(targetDb);
-	const TABLE_OF = { learnings: 'learnings', decisions: 'decisions', sessions: 'sessions', entities: 'entities', observations: 'entity_observations', relations: 'entity_relations' };
+	const TABLE_OF = { learnings: 'learnings', learningsHistory: 'learnings_history', decisions: 'decisions', sessions: 'sessions', entities: 'entities', observations: 'entity_observations', relations: 'entity_relations' };
 	const existingIds = Object.fromEntries(Object.keys(TABLE_OF).map((k) => [k, new Set()]));
 	if (exists) {
 		const Database = require('better-sqlite3');
 		const pdb = new Database(targetDb, { readonly: true });
+		// A store no newer server has opened yet lacks learnings_history.
+		const tables = new Set(pdb.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name));
 		for (const [key, table] of Object.entries(TABLE_OF)) {
-			existingIds[key] = new Set(pdb.prepare(`SELECT id FROM ${table}`).all().map((r) => r.id));
+			if (tables.has(table)) existingIds[key] = new Set(pdb.prepare(`SELECT id FROM ${table}`).all().map((r) => r.id));
 		}
 		pdb.close();
 	}
@@ -891,7 +936,7 @@ if (!apply) {
 	console.log('');
 	console.log(exists ? 'Existing store:' : 'New store (will be created):');
 	for (const key of Object.keys(TABLE_OF)) {
-		const items = envelope[key];
+		const items = envelope[key] ?? [];
 		const dupes = items.filter((i) => existingIds[key].has(i.id)).length;
 		console.log(`  ${key}: ${items.length - dupes} would be added, ${dupes} already present (skipped)`);
 	}
@@ -941,8 +986,9 @@ if (!existsSync(serverPath)) {
 
 const p = spawn(process.execPath, [serverPath], {
 	stdio: ['pipe', 'pipe', 'pipe'],
-	// A restore writes what the tree holds, so the rule for new texts (local-memory-mcp-i8n) does not apply.
-	env: { ...process.env, MEMORY_DB_PATH: targetDb, MEMORY_REQUIRE_STYLE: '0' },
+	// A restore writes what the tree holds: the rule for new texts (local-memory-mcp-i8n) does not apply,
+	// and a synced change brings its version from the machine that made it (local-memory-mcp-mnb).
+	env: { ...process.env, MEMORY_DB_PATH: targetDb, MEMORY_REQUIRE_STYLE: '0', MEMORY_RECORD_HISTORY: '0' },
 });
 let err = '';
 p.stderr.on('data', (d) => (err += d));

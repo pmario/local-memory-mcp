@@ -2,8 +2,9 @@
 
 A lossless markdown export and import, `backup-store.mjs` for a snapshot taken
 while servers run, `verify-install.mjs` to smoke-test a built server over MCP
-stdio, and `retrieval-check.mjs`, which measures how well a build finds whole
-entries. The install workflow those last two belong to is in
+stdio, `retrieval-check.mjs`, which measures how well a build finds whole
+entries, and `history-from-backup.mjs`, which recovers old texts of learnings
+rewritten before the store kept history. The install workflow those last two belong to is in
 [../keep/README.md](../keep/README.md).
 
 ## Markdown export / import
@@ -219,6 +220,19 @@ out of a repository and delete it when you are done.
   reported per mode with r1, r5 and MRR.
 - Not part of `npm test`: it needs the real model and a real store.
 
+## history-from-backup.mjs: old texts from before history
+
+```
+node scripts/dev-tools/history-from-backup.mjs --backup <file> --expired-at "YYYY-MM-DD HH:MM:SS" [--db <path>] [--apply] <id>...
+```
+
+For learnings rewritten before `learnings_history` existed, stores the backup's
+row as the learning's first version, valid from its creation until
+`--expired-at` (UTC), the time the rewrite replaced it. Ids may be 8-character
+prefixes. It skips a learning whose text equals the backup's, and one that
+already has versions, so run it before any other change to those learnings. Dry
+run unless `--apply`; the store may stay in use.
+
 ## Re-running them
 
 | Script | Second run |
@@ -228,9 +242,11 @@ out of a repository and delete it when you are done.
 | `backup-store.mjs` | **Adds another snapshot**, named by the minute; within the same minute it refuses rather than overwrite. Delete old snapshots yourself |
 | `verify-install.mjs` | Overwrites its one copy (`<out>/verify.sqlite`) and reports the same result |
 | `retrieval-check.mjs` | Overwrites its copy and its result file; the re-embed finds nothing to do the second time |
+| `history-from-backup.mjs` | Adds nothing: a learning that already has versions is skipped |
 
-None of them writes to the source store: it is opened read-only, so servers can
-keep running.
+Apart from `import-md.mjs` and `history-from-backup.mjs --apply`, which write to
+their target store, none of them writes to the source store: it is opened
+read-only, so servers can keep running.
 
 ## Tests
 

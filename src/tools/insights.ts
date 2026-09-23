@@ -281,6 +281,7 @@ The style label is the writer's promise. The server never adds it and checks onl
 - \`memory_contradictions()\` — LLM-free scan for observation pairs with high cosine similarity but disagreeing negation or confidence. Needs sqlite-vec.
 - \`memory_observation_supersede({observationId, supersededById?})\` — retire a stale fact by setting valid_to; it stays for asOf queries. With supersededById, the newer fact's valid_from is the cutoff.
 - \`memory_learn_archive({learningId, reason?})\` — soft-delete a learning: it never resurfaces in search, \`memory_get\` still opens it.
+- \`memory_get({ids, asOf?, history?})\` — every update or archive keeps the replaced version of a learning; asOf reads it as the store held it then, history: true lists its versions.
 - \`memory_learn_update({learningId, content?, confidence?, tags?, project?, category?, style?, splitFrom?, memoryType?})\` — edit a live learning; project null unscopes it, splitFrom null takes it out of a split; re-embeds when the content changes, and a rewrite declares its style (see topic writing).
 - \`memory_reflect({lookbackDays?: 7})\` — most-used and stale learnings, hot entities, open decisions, as data plus a markdown summary. No LLM call.`,
 

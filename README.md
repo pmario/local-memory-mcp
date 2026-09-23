@@ -157,6 +157,7 @@ memory_search({ query: "...", mode: "vector" })    // cosine only
 - `MEMORY_EMBED_CACHE_DIR=...` — override the Transformers.js cache location.
 - `MEMORY_EMBED_DTYPE=fp32|fp16|q8|q4` — model quantization (default `q8`).
 - `MEMORY_REQUIRE_STYLE=0` — let `memory_learn`, `memory_learn_bulk` and content rewrites through without `style: ["atomic", "factual"]`; such entries are stored unstyled.
+- `MEMORY_RECORD_HISTORY=0` — write no learning versions; `import-md.mjs` starts its server this way, because a synced change brings its version from the machine that made it.
 
 ## Lifecycle + Reflection (v2.1.0+)
 
@@ -210,7 +211,7 @@ memory_learn_update({ learningId: "...", content: "…", confidence: 0.9 })
 
 `update` edits a live (non-archived) learning. If `content` changes we re-embed in the F4 atomic pattern (compute outside the transaction, write inside one sync `db.transaction()`). If the embedding write fails or vec is disabled, the now-stale old embedding is purged so cosine search can't surface a vector that no longer represents the live text. Bumps `usage_count` and sets `last_used` so an edit counts as a touch. When the new content only appends to the old, the result carries a `notice` to check that the first line still states the current claim, since brief results show only that line.
 
-**Trade-off — no audit trail.** `update` overwrites the previous content. The old text is not retained anywhere. This keeps the schema clean; a future version may add `memory_learn_history` plus an immutable `learnings_history` table for users who need point-in-time recovery. If you need an audit trail today, `memory_learn_archive(reason: "wrong")` the old learning and `memory_learn` the new one as a fresh row — the old text stays in the archived row.
+**History.** Before `update` or `archive` changes a learning, the row it replaces is copied into the immutable `learnings_history` table with the time span the store held it. `memory_get({ ids, asOf })` returns a learning as it was at that instant, and `memory_get({ ids, history: true })` lists its earlier versions with dates and headlines. Both export formats carry the versions.
 
 ### Reflection — what's important right now
 
@@ -235,7 +236,7 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 
 **`memory_session_start`** -- Call this first in every conversation. Lists what your AI needs to pick up where you left off, as headlines with ids: the first paragraph of the latest session summary and the 5 newest learnings. With the optional `project` parameter, the session of that project comes first and only its learnings are listed. Pass `detail: "full"` for the last 3 summaries and whole learnings instead.
 
-**`memory_get`** -- Full text of learnings, decisions and sessions by id (1 to 20 ids), such as the ids `memory_session_start` and a brief `memory_search` list. A session id returns the whole summary and its open tasks, which a brief session start cuts to the first paragraph. Archived learnings are returned too, marked `archived: true`; unknown ids come back in `missing`. Opening an entry counts in its `usage_count` and `last_used`, so `memory_reflect` sees what you actually read.
+**`memory_get`** -- Full text of learnings, decisions and sessions by id (1 to 20 ids), such as the ids `memory_session_start` and a brief `memory_search` list. A session id returns the whole summary and its open tasks, which a brief session start cuts to the first paragraph. Archived learnings are returned too, marked `archived: true`; unknown ids come back in `missing`. `asOf` returns each learning as the store held it at that time (a learning that did not exist yet lands in `missing`), and `history: true` adds its earlier versions. Opening an entry counts in its `usage_count` and `last_used`, so `memory_reflect` sees what you actually read.
 
 **`memory_session_end`** -- Call at the end to save a summary. Pass a `summary` string describing what was accomplished. The next session auto-loads this. Without arguments it closes the active session.
 

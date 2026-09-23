@@ -7,11 +7,27 @@ import { z } from 'zod';
 import { getDb, nowIso } from '../db/client.js';
 import { parseStyle } from '../lib/style.js';
 import { activeParts } from '../lib/split.js';
+import { VERSIONED_COLUMNS, currentSince } from '../lib/history.js';
+import { headline } from '../lib/brief.js';
 import type { ToolResult } from '../lib/types.js';
 
 export const getSchema = z.object({
   ids: z.array(z.string().min(1)).min(1).max(20),
+  // A learning as the store held it at this instant (local-memory-mcp-mnb); decisions and sessions have no history.
+  asOf: z
+    .string()
+    .refine((v) => !Number.isNaN(Date.parse(v)), {
+      message: 'asOf must be a parseable date string (ISO 8601 or SQLite-compatible)',
+    })
+    .optional(),
+  history: z.boolean().optional(),
 });
+
+// The columns a version replaces in a learning row; see VERSIONED_COLUMNS in src/lib/history.ts.
+type VersionRow = Pick<
+  LearningRow,
+  'category' | 'content' | 'project' | 'tags_json' | 'confidence' | 'memory_type' | 'style_json' | 'split_from' | 'archived' | 'lifecycle_state'
+> & { recorded_at: string; expired_at: string };
 
 interface LearningRow {
   id: string;
@@ -105,8 +121,40 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
     .all(...ids) as SessionRow[];
 
   const found = new Map<string, Record<string, unknown>>();
-  for (const { tags_json, style_json, archived, split_from, ...row } of learnings) {
-    const parts = activeParts(db, row.id);
+  const isAtOrAfter = db.prepare('SELECT datetime(?) >= datetime(?) AS yes');
+  const versionColumns = `${VERSIONED_COLUMNS.join(', ')}, recorded_at, expired_at`;
+  const versionAt = db.prepare(
+    `SELECT ${versionColumns} FROM learnings_history
+     WHERE learning_id = ? AND datetime(recorded_at) <= datetime(@asOf) AND datetime(@asOf) < datetime(expired_at)
+     ORDER BY expired_at DESC, rowid DESC LIMIT 1`
+  );
+  const versionsOf = db.prepare(`SELECT ${versionColumns} FROM learnings_history WHERE learning_id = ? ORDER BY expired_at, rowid`);
+  for (const current of learnings) {
+    let learning: LearningRow = current;
+    let version: { recordedAt: string; expiredAt: string | null } | undefined;
+    if (input.asOf !== undefined) {
+      const since = currentSince(db, current.id)!;
+      if ((isAtOrAfter.get(input.asOf, since) as { yes: number | null }).yes === 1) {
+        version = { recordedAt: since, expiredAt: null };
+      } else {
+        const old = versionAt.get(current.id, { asOf: input.asOf }) as VersionRow | undefined;
+        if (!old) continue; // the learning did not exist yet, so it lands in missing
+        const { recorded_at, expired_at, ...columns } = old;
+        learning = { ...current, ...columns };
+        version = { recordedAt: recorded_at, expiredAt: expired_at };
+      }
+    }
+    const { tags_json, style_json, archived, split_from, ...row } = learning;
+    const parts = input.asOf === undefined ? activeParts(db, row.id) : [];
+    const history = input.history
+      ? (versionsOf.all(row.id) as VersionRow[]).map((v) => ({
+          recordedAt: v.recorded_at,
+          expiredAt: v.expired_at,
+          headline: headline(v.content),
+          style: parseStyle(v.style_json),
+          archived: v.archived === 1,
+        }))
+      : undefined;
     found.set(row.id, {
       type: 'learning',
       ...row,
@@ -115,6 +163,8 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
       archived: archived === 1,
       ...(split_from !== null ? { splitFrom: split_from } : {}),
       ...(parts.length > 0 ? { parts } : {}),
+      ...(version ? { version } : {}),
+      ...(history ? { history } : {}),
     });
   }
   for (const { tags_json, ...row } of decisions) {

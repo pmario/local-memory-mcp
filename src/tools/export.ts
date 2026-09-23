@@ -83,6 +83,31 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
     splitFrom: r.split_from,
   }));
 
+  // Earlier versions of the exported learnings (local-memory-mcp-mnb).
+  const learningsHistory = (
+    db
+      .prepare(
+        `SELECT h.* FROM learnings_history h JOIN learnings l ON l.id = h.learning_id
+         ${includeArchived ? '' : 'WHERE l.archived = 0'} ORDER BY h.learning_id, h.expired_at, h.rowid`
+      )
+      .all() as Array<Record<string, unknown>>
+  ).map((r) => ({
+    id: r.id,
+    learningId: r.learning_id,
+    category: r.category,
+    content: r.content,
+    project: r.project,
+    tags: safeJsonArray(r.tags_json),
+    confidence: r.confidence,
+    memoryType: r.memory_type,
+    style: parseStyle(r.style_json as string),
+    splitFrom: r.split_from,
+    archived: r.archived,
+    lifecycleState: r.lifecycle_state,
+    recordedAt: r.recorded_at,
+    expiredAt: r.expired_at,
+  }));
+
   const decisions = (
     db
       .prepare(
@@ -199,6 +224,7 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
     schemaVersion,
     counts: {
       learnings: learnings.length,
+      learningsHistory: learningsHistory.length,
       decisions: decisions.length,
       entities: entities.length,
       observations: observations.length,
@@ -208,6 +234,7 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
     profile,
     goal: goalRow?.value ?? null,
     learnings,
+    learningsHistory,
     decisions,
     entities,
     observations,
@@ -382,6 +409,24 @@ const importLearningSchema = z.object({
   splitFrom: zId.nullish(),
 });
 
+// An earlier version of a learning; both times are required, since they place it in the learning's history.
+const importLearningHistorySchema = z.object({
+  id: zId,
+  learningId: zId,
+  category: z.enum(LEARNING_CATEGORIES as [LearningCategory, ...LearningCategory[]]),
+  content: z.string().min(1).max(10000),
+  project: zOptStr(200),
+  tags: zTags,
+  confidence: zConfidence,
+  memoryType: z.enum(['episodic', 'semantic']).nullish(),
+  style: z.array(z.string()).nullish().transform((v) => knownStyles(v ?? [])),
+  splitFrom: zId.nullish(),
+  archived: zFlag,
+  lifecycleState: zLifecycleState,
+  recordedAt: z.string().min(1).max(64),
+  expiredAt: z.string().min(1).max(64),
+});
+
 const importDecisionSchema = z.object({
   id: zId,
   date: zIsoish,
@@ -463,6 +508,7 @@ const MAX_META_KEY = 100;
 
 interface ImportArrays {
   learnings: Array<Record<string, unknown>>;
+  learningsHistory: Array<Record<string, unknown>>;
   decisions: Array<Record<string, unknown>>;
   entities: Array<Record<string, unknown>>;
   observations: Array<Record<string, unknown>>;
@@ -508,6 +554,7 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
   };
   const data: ImportArrays = {
     learnings: arr('learnings'),
+    learningsHistory: arr('learningsHistory'),
     decisions: arr('decisions'),
     entities: arr('entities'),
     observations: arr('observations'),
@@ -549,6 +596,9 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
   const validRelations = data.relations.map((r) => dedupe(relationIds, parseRecord(importRelationSchema, r, 'relation'), 'relation'));
   const validLearnings = data.learnings.map((l) => dedupe(embeddableIds, parseRecord(importLearningSchema, l, 'learning'), 'learning'));
   const validDecisions = data.decisions.map((d) => dedupe(embeddableIds, parseRecord(importDecisionSchema, d, 'decision'), 'decision'));
+  // Versions carry no embedding, so their ids only have to be unique among versions.
+  const historyIds = new Set<string>();
+  const validHistory = data.learningsHistory.map((h) => dedupe(historyIds, parseRecord(importLearningHistorySchema, h, 'learning version'), 'learning version'));
 
   // Phase 1 (async, no lock): re-embed all content-bearing rows in parallel.
   // We key vectors by source id so the sync phase can attach them after a
@@ -591,6 +641,7 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
 
   const counts = {
     learnings: 0,
+    learningsHistory: 0,
     decisions: 0,
     entities: 0,
     observations: 0,
@@ -601,6 +652,7 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
   const skipped = {
     observationsMissingEntity: 0,
     relationsMissingEndpoint: 0,
+    historyMissingLearning: 0,
     // Records dropped by the per-array cap never reached a schema, so they are
     // counted here rather than being invisible. Silent truncation would read as
     // "imported everything" when it did not.
@@ -761,6 +813,36 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       }
     }
 
+    // 5b) Learning versions, after the learnings they belong to
+    const learningExists = db.prepare('SELECT 1 FROM learnings WHERE id = ? LIMIT 1');
+    const hIns = db.prepare(
+      `INSERT OR IGNORE INTO learnings_history
+       (id, learning_id, category, content, project, tags_json, confidence, memory_type,
+        style_json, split_from, archived, lifecycle_state, recorded_at, expired_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const h of validHistory) {
+      if (!h) { skipped.malformed++; continue; }
+      if (!learningExists.get(h.learningId)) { skipped.historyMissingLearning++; continue; }
+      const info = hIns.run(
+        h.id,
+        h.learningId,
+        h.category,
+        h.content,
+        h.project || null,
+        JSON.stringify(h.tags ?? []),
+        h.confidence ?? 0.7,
+        h.memoryType || 'semantic',
+        JSON.stringify(h.style),
+        h.splitFrom || null,
+        flagToInt(h.archived),
+        h.lifecycleState || 'active',
+        h.recordedAt,
+        h.expiredAt
+      );
+      if (info.changes > 0) counts.learningsHistory++;
+    }
+
     // 6) Decisions
     const dIns = db.prepare(
       `INSERT OR IGNORE INTO decisions
@@ -795,9 +877,9 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
   tx();
 
   const totalImported =
-    counts.learnings + counts.decisions + counts.entities + counts.observations + counts.relations;
+    counts.learnings + counts.learningsHistory + counts.decisions + counts.entities + counts.observations + counts.relations;
   const totalSkipped =
-    skipped.observationsMissingEntity + skipped.relationsMissingEndpoint + skipped.malformed;
+    skipped.observationsMissingEntity + skipped.relationsMissingEndpoint + skipped.historyMissingLearning + skipped.malformed;
 
   return {
     success: true,

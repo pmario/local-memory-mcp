@@ -72,7 +72,7 @@
     {"name": "memory_learn", "description": "Store a learning (pattern/mistake/insight) with its checked style atomic + factual; splitFrom names the hub of a split. Auto-embeds for hybrid search."},
     {"name": "memory_recall", "description": "Quick keyword recall on learnings, or omit query for most-recent. detail: brief returns headlines."},
     {"name": "memory_search", "description": "Hybrid search (FTS5 BM25 + vector cosine via RRF). Modes: fts/vector/hybrid (default). detail: brief returns headlines."},
-    {"name": "memory_get", "description": "Full text of learnings and decisions by id (1-20 ids). Archived learnings included; unknown ids in missing."},
+    {"name": "memory_get", "description": "Full text of learnings and decisions by id (1-20 ids). Archived learnings included; unknown ids in missing. asOf and history read earlier versions of a learning."},
     {"name": "memory_decide", "description": "Log a decision with reasoning + alternatives. Auto-embeds."},
     {"name": "memory_entity_create", "description": "Create a knowledge graph entity"},
     {"name": "memory_entity_observe", "description": "Add an observation to an entity. Auto-embeds."},

@@ -90,7 +90,7 @@ describe('tree format 2: heading-like content', () => {
 		const r = run(IMPORT, [tree, '--envelope-only', envPath]);
 		expect(r.status, r.stderr).toBe(0);
 		const e = JSON.parse(readFileSync(envPath, 'utf8'));
-		expect(e.counts).toEqual({ learnings: 1, decisions: 1, entities: 1, observations: 1, relations: 0, sessions: 1 });
+		expect(e.counts).toEqual({ learnings: 1, learningsHistory: 0, decisions: 1, entities: 1, observations: 1, relations: 0, sessions: 1 });
 		expect(e.observations[0].content).toBe(OBS_CONTENT);
 		expect(e.entities[0].summary).toBe(ENTITY_SUMMARY);
 		expect(e.decisions[0].decision).toBe(DECISION_TEXT);

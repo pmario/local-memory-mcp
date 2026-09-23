@@ -158,3 +158,41 @@ describe('import-md --update against a --sync tree', () => {
 		expect(ver.stdout).toContain('VERIFY: perfect round-trip, 0 mismatches.');
 	});
 });
+
+describe('learning history through the tree (local-memory-mcp-mnb)', () => {
+	it('carries the version made on one machine to the other, without a second one recorded there', async () => {
+		// Machine A rewrites L_USED, which records the old text as a version.
+		const machineA = join(tmp, 'history-a.sqlite');
+		cpSync(store, machineA);
+		process.env.MEMORY_DB_PATH = machineA;
+		const client = await import('../../src/db/client.ts');
+		const { learnUpdate } = await import('../../src/tools/learn.ts');
+		const rewrite = await learnUpdate({ learningId: L_USED, content: 'recalled often, rewritten on A', style: ['atomic', 'factual'] });
+		expect(rewrite.success).toBe(true);
+		const [version] = client.getDb().prepare('SELECT id FROM learnings_history WHERE learning_id = ?').all(L_USED);
+		client.closeDb();
+
+		const treeA = join(tmp, 'history-tree');
+		const exp = run(EXPORT, ['--sync', '-e', treeA, '--db', machineA]);
+		expect(exp.status, exp.stderr).toBe(0);
+		const files = readdirSync(join(treeA, 'learnings-history'));
+		expect(files).toHaveLength(1);
+		expect(readFileSync(join(treeA, 'learnings-history', files[0]), 'utf8')).toContain('recalled often');
+
+		// Machine B still has the old text and no history.
+		const machineB = join(tmp, 'history-b.sqlite');
+		cpSync(store, machineB);
+		const apply = run(IMPORT, [treeA, '--db', machineB, '--apply', '--update']);
+		expect(apply.status, apply.stderr + apply.stdout).toBe(0);
+		process.env.MEMORY_DB_PATH = machineB;
+		const rows = client.getDb().prepare('SELECT id, content FROM learnings_history WHERE learning_id = ?').all(L_USED);
+		const current = client.getDb().prepare('SELECT content FROM learnings WHERE id = ?').get(L_USED);
+		client.closeDb();
+		delete process.env.MEMORY_DB_PATH;
+		expect(rows).toEqual([{ id: version.id, content: 'recalled often' }]);
+		expect(current.content).toBe('recalled often, rewritten on A');
+
+		const ver = run(IMPORT, [treeA, '--db', machineB, '--verify']);
+		expect(ver.stdout).toContain('VERIFY: perfect round-trip, 0 mismatches.');
+	});
+});

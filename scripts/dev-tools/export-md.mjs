@@ -86,7 +86,9 @@ Output tree:
   INDEX.md                       linked overview (regenerated, not imported)
   learnings/           one file per learning: frontmatter + verbatim content
   learnings-archived/  archived learnings, same format
-  decisions/           title/decision/reasoning/alternatives as sections
+  learnings-history/   one file per earlier version of a learning, same format
+                       plus learningId, recordedAt and expiredAt
+  decisions/          title/decision/reasoning/alternatives as sections
   sessions/            one file per session, summary + open tasks
   entities/            one file per entity; every observation is a
                        "## Observation <id>" section with its metadata lines
@@ -121,6 +123,7 @@ const EXPECTED_COLUMNS = {
 	entity_observations: ['id', 'entity_id', 'content', 'source', 'session_id', 'valid_from', 'valid_to', 'confidence', 'created_at'],
 	entity_relations: ['id', 'from_entity_id', 'to_entity_id', 'relation_type', 'weight', 'created_at'],
 	sessions: ['id', 'started_at', 'ended_at', 'project', 'summary', 'tasks_json'],
+	learnings_history: ['id', 'learning_id', 'category', 'content', 'project', 'tags_json', 'confidence', 'memory_type', 'style_json', 'split_from', 'archived', 'lifecycle_state', 'recorded_at', 'expired_at'],
 };
 // schema_version is a declaration, the column lists are ground truth; the
 // version check additionally catches a migration that ADDS A TABLE this
@@ -276,7 +279,7 @@ const write = (relPath, text, what) => {
 };
 
 const index = { learnings: [], 'archived learnings': [], decisions: [], entities: [], sessions: [] };
-const wrote = { learnings: 0, decisions: 0, entities: 0, sessions: 0 };
+const wrote = { learnings: 0, versions: 0, decisions: 0, entities: 0, sessions: 0 };
 const skippedEntityIds = new Set();
 
 const learnings = db.prepare(
@@ -319,6 +322,36 @@ for (const l of learnings) {
 	index[l.archived ? 'archived learnings' : 'learnings'].push(
 		`- [${day} · ${l.category}${l.project ? ' · ' + l.project : ''}](${rel}) — ${String(l.content).split('\n')[0].slice(0, 100)}`
 	);
+}
+
+// Earlier versions of learnings (local-memory-mcp-mnb); not machine-local, so --sync carries them too.
+const versions = db.prepare(
+	`SELECT id, learning_id, category, content, project, tags_json, confidence, memory_type,
+	        style_json, split_from, archived, lifecycle_state, recorded_at, expired_at
+	 FROM learnings_history ORDER BY learning_id, expired_at, rowid`
+).all();
+for (const v of versions) {
+	const day = String(v.expired_at).slice(0, 10);
+	const rel = write(
+		join('learnings-history', `${part(day)}_${slug(v.content)}_${part(v.learning_id.slice(0, 8))}_${part(v.id.slice(0, 8))}.md`),
+		fm({
+			id: v.id,
+			learningId: v.learning_id,
+			category: v.category,
+			project: v.project,
+			tags: JSON.parse(v.tags_json),
+			confidence: v.confidence,
+			memoryType: v.memory_type,
+			style: JSON.parse(v.style_json),
+			splitFrom: v.split_from,
+			archived: v.archived,
+			lifecycleState: v.lifecycle_state,
+			recordedAt: v.recorded_at,
+			expiredAt: v.expired_at,
+		}) + v.content + '\n',
+		`learning version ${day} of ${v.learning_id} [${v.id}]`
+	);
+	if (rel) wrote.versions++;
 }
 
 const decisions = db.prepare(
@@ -546,5 +579,5 @@ if (skipLog.length) {
 
 db.close();
 console.log(`Exported to ${outDir}:`);
-console.log(`  ${wrote.learnings} learnings, ${wrote.decisions} decisions, ${wrote.entities} entities, ${wrote.sessions} sessions`);
+console.log(`  ${wrote.learnings} learnings, ${wrote.versions} learning versions, ${wrote.decisions} decisions, ${wrote.entities} entities, ${wrote.sessions} sessions`);
 if (skipLog.length) console.log(`  ${skipLog.length} record(s) skipped — see ${join(outDir, 'error.log')}`);

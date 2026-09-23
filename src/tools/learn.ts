@@ -33,6 +33,7 @@ import {
   zWrittenStyle,
 } from '../lib/style.js';
 import { checkHub, checkPart } from '../lib/split.js';
+import { withHistory } from '../lib/history.js';
 import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
 
 // Exported so memory_import can validate against the SAME set the interactive
@@ -204,13 +205,17 @@ export function learnArchive(input: z.infer<typeof learnArchiveSchema>): ToolRes
   // sanitize beyond the Zod `.max(500)` so the stored value is human-readable.
   const lifecycle = input.reason ? `archived:${input.reason}` : 'archived';
 
-  db.prepare(
-    `UPDATE learnings
-       SET archived = 1,
-           archived_at = ?,
-           lifecycle_state = ?
-     WHERE id = ?`
-  ).run(nowIso(), lifecycle, input.learningId);
+  db.transaction(() =>
+    withHistory(db, input.learningId, () =>
+      db.prepare(
+        `UPDATE learnings
+           SET archived = 1,
+               archived_at = ?,
+               lifecycle_state = ?
+         WHERE id = ?`
+      ).run(nowIso(), lifecycle, input.learningId)
+    )
+  )();
 
   return {
     success: true,
@@ -351,7 +356,7 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
   const vec = willChangeContent ? await prepareEmbedding(input.content as string) : null;
 
   const tx = db.transaction(() => {
-    db.prepare(`UPDATE learnings SET ${updates.join(', ')} WHERE id = ?`).run(...args);
+    withHistory(db, input.learningId, () => db.prepare(`UPDATE learnings SET ${updates.join(', ')} WHERE id = ?`).run(...args));
     if (willChangeContent) {
       if (vec) {
         writeEmbeddingSync(db, input.learningId, 'learning', vec);

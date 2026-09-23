@@ -4,6 +4,10 @@
 
 Lean session start and embeddings that cover whole entries. 26 tools, 269 → **332 tests**.
 
+### Added — learning history
+
+Before `memory_learn_update` or `memory_learn_archive` changes a learning, the row it replaces goes into a new table `learnings_history` with the time span the store held it. `memory_get` takes `asOf` (a learning as the store held it then) and `history: true` (its earlier versions with dates and headlines). `memory_export`/`memory_import` carry the versions as `learningsHistory`, and the Markdown tree as `learnings-history/`; `import-md.mjs` starts its server with `MEMORY_RECORD_HISTORY=0`, so a synced change keeps the version made on the machine that changed it instead of recording a second one. `scripts/dev-tools/history-from-backup.mjs` recovers the old text of a learning rewritten before history existed.
+
 ### Changed — a learning's style is declared, never stamped
 
 `memory_learn`, each `memory_learn_bulk` item and a content rewrite in `memory_learn_update` require `style: ["atomic", "factual"]`, which the writer passes after checking the text against `memory_guide({topic: "writing"})`; `MEMORY_REQUIRE_STYLE=0` turns the requirement off. The server no longer adds the style itself. Under `factual` it now refuses appended `SUPERSEDED`, `CORRECTED`, `UPDATE` and `ADDENDUM` sections as well as `AMENDED`, outside fenced code.

@@ -70,6 +70,26 @@ CREATE INDEX IF NOT EXISTS idx_learnings_date ON learnings(date DESC);
 CREATE INDEX IF NOT EXISTS idx_learnings_archived ON learnings(archived);
 CREATE INDEX IF NOT EXISTS idx_learnings_lifecycle ON learnings(lifecycle_state);
 
+-- ─── LEARNINGS HISTORY (src/lib/history.ts) ─────────
+-- Earlier versions of a learning: every column a writer can change, and when the store held it.
+CREATE TABLE IF NOT EXISTS learnings_history (
+  id              TEXT PRIMARY KEY,
+  learning_id     TEXT NOT NULL,
+  category        TEXT NOT NULL,
+  content         TEXT NOT NULL,
+  project         TEXT,
+  tags_json       TEXT NOT NULL,
+  confidence      REAL NOT NULL,
+  memory_type     TEXT NOT NULL,
+  style_json      TEXT NOT NULL,
+  split_from      TEXT,
+  archived        INTEGER NOT NULL,
+  lifecycle_state TEXT NOT NULL,
+  recorded_at     TEXT NOT NULL,
+  expired_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_learnings_history_learning ON learnings_history(learning_id, expired_at);
+
 -- ─── ENTITIES (Knowledge Graph Nodes) ────────────────
 CREATE TABLE IF NOT EXISTS entities (
   id            TEXT PRIMARY KEY,
