@@ -82,6 +82,27 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
     }
   });
 
+  it('the writing topic also covers what surrounds the text (local-memory-mcp-x2t)', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    for (const text of [
+      'memory_search', // search before writing
+      'outlives the session', // what qualifies
+      'memoryType', // metadata
+      'source',
+      'store the split-off parts first', // splitting order
+      'memory_learn_archive', // superseded entries
+      'handoff pointer',
+      'date', // when it was measured
+      'secret', // never store one
+      'promise', // the style label
+    ]) {
+      expect(content).toContain(text);
+    }
+  });
+
   it('the server instructions send a writer to that topic', async () => {
     const { INSTRUCTIONS } = await import('./instructions.js');
     expect(INSTRUCTIONS).toContain('memory_guide({topic: "writing"})');

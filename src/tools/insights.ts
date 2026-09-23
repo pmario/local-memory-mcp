@@ -257,7 +257,21 @@ A factual learning has the prose removed and all the information kept, with no l
 
 The text is plain sentences in sentence case. The first line states the current rule, because brief results show only that line. Every paragraph opens with a sentence naming its subject, because a chunk may start at any paragraph. Identifiers stay verbatim inside the sentences.
 
-A correction rewrites the entry to the current state with \`memory_learn_update\`; a factual text with an appended \`AMENDED\` section is refused. Before storing a rewrite, check it line by line against the old text, so no fact is lost.`,
+A correction rewrites the entry to the current state with \`memory_learn_update\`; a factual text with an appended \`AMENDED\` section is refused. Before storing a rewrite, check it line by line against the old text, so no fact is lost.
+
+A learning is worth storing only when it was measured rather than assumed, outlives the session (a property of a tool, runtime or convention, not one branch's state), and is not recorded elsewhere (code, git history, CLAUDE.md or AGENTS.md). Strong candidates are a diagnostic signature, a constraint no test catches, a corrected belief, an API unlike its obvious sibling, and a maintainer ruling with its reason. "We implemented X" or "improved" without a number does not qualify.
+
+Before writing, run \`memory_search\` on the subject. When an entry already covers it, rewrite that entry instead of adding a second one, because two entries on one subject compete for the same queries and a reader may find only the older one. Skip a finding that is already recorded or true only of the session.
+
+Metadata decides how an entry is found and filtered. Always pass \`memoryType\` (semantic for what is true, episodic for what happened): without it the classifier marks every \`mistake\` entry episodic, and any other entry whose text contains today, heute, yesterday, gestern, happened, passiert, incident, vorfall, just now or gerade, and \`memory_learn_update\` cannot change it afterwards. Pick the category from the fixed list. Set \`project\` as provenance, and leave it empty for rules about the machine or about how the assistant works; \`memory_learn_update\` can change project and category later. Add tags that are useful as filters, and name the handoff or file the finding came from in \`source\`. A measured fact carries the date it was measured, beside the version and platform.
+
+Splitting follows an order that keeps every subject in the store: store the split-off parts first to get their ids, then rewrite the original to keep the subject a search most likely lands on, and link both directions with [[id8]]. Never rewrite the original before its parts exist.
+
+A superseded entry is archived with \`memory_learn_archive\`, with a reason that names its successor, rather than left active with a "SUPERSEDED" first line. A handoff pointer names the handoff file, its chain and sequence, the status and the next step; keep one per chain and archive the previous pointer when writing the next, and store the session's lessons as their own entries.
+
+Never store a secret: no passphrase, key, token or credential, not even a test one; name the file or script that holds or mints it instead.
+
+The style label is the writer's promise. The server stamps ["atomic", "factual"] on every text it writes but checks only for appended AMENDED sections, so everything else in this guide is the writer's job.`,
 
   lifecycle: `# Lifecycle
 
