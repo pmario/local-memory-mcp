@@ -14,7 +14,7 @@ Before `memory_learn_update` or `memory_learn_archive` changes a learning, the r
 
 ### Added — splits and memory type on update
 
-A new column `split_from` records the hub a learning was split out of (`splitFrom` on learn, bulk and update). A part must link its hub as `[[id8]]`, a hub write must link every active part, and a split has one level; `memory_get` shows `splitFrom` and `parts`. `memory_learn_update` also changes `memoryType`. Both export formats carry the column.
+`source` is defined as provenance, where the finding came from, set once; a split part copies its hub's `source`, and the tool list now carries the field's description. A new column `split_from` records the hub a learning was split out of (`splitFrom` on learn, bulk and update). A part must link its hub as `[[id8]]`, a hub write must link every active part, and a split has one level; `memory_get` shows `splitFrom` and `parts`. `memory_learn_update` also changes `memoryType`. Both export formats carry the column.
 
 ### Changed — embeddings cover the whole entry
 

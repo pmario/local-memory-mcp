@@ -59,7 +59,7 @@ Developers and privacy-conscious users who want structured, searchable, long-ter
 
 **Sessions.** Each conversation can be started and ended; `memory_session_start` lists headlines of the latest session and learnings so the assistant resumes where you left off, and `memory_get` opens the entries it needs in full.
 
-**Learnings.** Typed knowledge entries (`pattern`, `mistake`, `insight`, `research`, `architecture`, `infrastructure`, `tool`, `workflow`, `performance`, `security`) with confidence, tags, and an episodic/semantic type that is auto-classified. A gatekeeper prevents duplicates: an exact match bumps a usage counter instead of storing the content twice. Enriching an existing entry is explicit, via `memory_learn_update` against its id, so a write never silently rewrites a row the caller did not name.
+**Learnings.** Typed knowledge entries (`pattern`, `mistake`, `insight`, `research`, `architecture`, `infrastructure`, `tool`, `workflow`, `performance`, `security`) with confidence, tags, and an episodic/semantic type that is auto-classified. A gatekeeper prevents duplicates: an exact match bumps a usage counter instead of storing the content twice. Enriching an existing entry is explicit, via `memory_learn_update` against its id, so a write never silently rewrites a row the caller did not name. A learning's `source` is its provenance: where the finding came from (a handoff, file, test or URL). It is set once when the learning is stored, and a part split out of a larger learning copies that learning's `source`, while the split itself is recorded in `split_from`.
 
 **Decisions.** Strategic choices with reasoning and alternatives, so months later you can reconstruct *why* you chose something — not just what.
 

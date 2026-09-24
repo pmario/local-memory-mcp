@@ -82,6 +82,21 @@ describe('style is required at the tool boundary', () => {
     expect(bulk.properties.items.items.required).toContain('style');
   });
 
+  it('the source parameter says what source is for, on memory_learn and each bulk item (local-memory-mcp-ag7)', async () => {
+    const { toMcpToolList } = await import('./registry.js');
+    const tools = toMcpToolList();
+    type Props = { properties: Record<string, { description?: string }> };
+    const learn = (tools.find((t) => t.name === 'memory_learn')!.inputSchema as Props).properties.source;
+    const bulk = (
+      tools.find((t) => t.name === 'memory_learn_bulk')!.inputSchema as { properties: { items: { items: Props } } }
+    ).properties.items.items.properties.source;
+    for (const source of [learn, bulk]) {
+      expect(source.description).toContain('where the finding came from');
+      expect(source.description).toContain("copies its hub's source");
+      expect(source.description).toContain('splitFrom');
+    }
+  });
+
   it('the write-tool descriptions say style is required, in RFC 2119 key words (local-memory-mcp-jz8)', async () => {
     const { toMcpToolList } = await import('./registry.js');
     for (const name of ['memory_learn', 'memory_learn_update', 'memory_learn_bulk']) {

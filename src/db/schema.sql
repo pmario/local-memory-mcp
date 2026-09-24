@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS learnings (
   usage_count     INTEGER NOT NULL DEFAULT 0,
   last_used       TEXT,
   confidence      REAL NOT NULL DEFAULT 0.7,
-  source          TEXT,
+  source          TEXT, -- provenance: where the finding came from; set once, a split part copies its hub's
   verified        INTEGER NOT NULL DEFAULT 0,
   verified_at     TEXT,
   archived        INTEGER NOT NULL DEFAULT 0,

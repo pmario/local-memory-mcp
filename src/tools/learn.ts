@@ -45,13 +45,21 @@ export const LEARNING_CATEGORIES: LearningCategory[] = [
 
 // ─── learn ───────────────────────────────────────────
 
+// Provenance, set once: memory_learn_update has no source field (local-memory-mcp-ag7).
+const zSource = z
+  .string()
+  .describe(
+    "Provenance: where the finding came from, such as a handoff, file, test or URL. Set once; memory_learn_update cannot change it. A part split out of a hub copies its hub's source; the split itself goes in splitFrom, never in source."
+  )
+  .optional();
+
 export const learnSchema = z.object({
   category: z.enum(LEARNING_CATEGORIES as [LearningCategory, ...LearningCategory[]]),
   content: z.string().min(1).max(10000),
   project: z.string().optional(),
   tags: z.array(z.string()).optional(),
   confidence: z.number().min(0).max(1).optional(),
-  source: z.string().optional(),
+  source: zSource,
   memoryType: z.enum(['episodic', 'semantic']).optional(),
   style: zWrittenStyle,
   // The full id of the hub this entry was split out of.
@@ -422,7 +430,7 @@ export const learnBulkSchema = z.object({
         project: z.string().optional(),
         tags: z.array(z.string()).optional(),
         confidence: z.number().min(0).max(1).optional(),
-        source: z.string().optional(),
+        source: zSource,
         memoryType: z.enum(['episodic', 'semantic']).optional(),
         style: zWrittenStyle,
         splitFrom: z.string().min(1).optional(),

@@ -226,7 +226,14 @@ export const TOOLS: ToolDef[] = [
 
 type JsonSchema = Record<string, unknown>;
 
+// A field's .describe() text becomes its JSON Schema description, which is what a model reads.
 function zodToJsonSchema(schema: z.ZodTypeAny): JsonSchema {
+  const result = convertZod(schema);
+  const description = (schema as unknown as { _def: { description?: string } })._def.description;
+  return description && result.description === undefined ? { ...result, description } : result;
+}
+
+function convertZod(schema: z.ZodTypeAny): JsonSchema {
   const def = (schema as unknown as { _def: { typeName: string } })._def;
 
   if (def.typeName === 'ZodObject') {

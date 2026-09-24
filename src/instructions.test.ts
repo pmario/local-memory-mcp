@@ -122,6 +122,16 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
     }
   });
 
+  it('the writing topic defines source and how a part fills it (local-memory-mcp-ag7)', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    for (const text of ['where the finding came from', 'set once', "SHOULD copy the hub's", 'MUST NOT record the split']) {
+      expect(content).toContain(text);
+    }
+  });
+
   it('the writing topic states its rules in RFC 2119 key words (local-memory-mcp-jz8)', async () => {
     const { guide } = await import('./tools/insights.js');
     const result = guide({ topic: 'writing' });
