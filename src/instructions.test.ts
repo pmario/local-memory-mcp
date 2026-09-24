@@ -108,8 +108,27 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
     const result = guide({ topic: 'writing' });
     if (!result.success) throw new Error(result.error);
     const content = (result.data as { content: string }).content;
-    for (const text of ['required', 'splitFrom', 'checklist', 'links every part']) expect(content).toContain(text);
+    for (const text of ['REQUIRED', 'splitFrom', 'checklist', 'links every part']) expect(content).toContain(text);
     for (const text of ['stamps', 'the server stores each new learning']) expect(content).not.toContain(text);
+  });
+
+  it('the writing topic makes atomic a test, not a judgment (local-memory-mcp-jz8)', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    for (const text of ['every paragraph and every rule', 'Before drafting', 'stated reason', 'fewer entries', 'style last']) {
+      expect(content).toContain(text);
+    }
+  });
+
+  it('the writing topic states its rules in RFC 2119 key words (local-memory-mcp-jz8)', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    for (const text of ['RFC 2119', 'MUST', 'MUST NOT', 'REQUIRED', 'SHOULD']) expect(content).toContain(text);
+    for (const text of ['Always pass', 'Never store', 'Never rewrite']) expect(content).not.toContain(text);
   });
 
   it('the server instructions send a writer to that topic', async () => {

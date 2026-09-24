@@ -10,7 +10,7 @@ Before `memory_learn_update` or `memory_learn_archive` changes a learning, the r
 
 ### Changed — a learning's style is declared, never stamped
 
-`memory_learn`, each `memory_learn_bulk` item and a content rewrite in `memory_learn_update` require `style: ["atomic", "factual"]`, which the writer passes after checking the text against `memory_guide({topic: "writing"})`; `MEMORY_REQUIRE_STYLE=0` turns the requirement off. The server no longer adds the style itself. Under `factual` it now refuses appended `SUPERSEDED`, `CORRECTED`, `UPDATE` and `ADDENDUM` sections as well as `AMENDED`, outside fenced code.
+`memory_learn`, each `memory_learn_bulk` item and a content rewrite in `memory_learn_update` require `style: ["atomic", "factual"]`, which the writer passes after checking the text against `memory_guide({topic: "writing"})`; `MEMORY_REQUIRE_STYLE=0` turns the requirement off. The server no longer adds the style itself. Under `factual` it now refuses appended `SUPERSEDED`, `CORRECTED`, `UPDATE` and `ADDENDUM` sections as well as `AMENDED`, outside fenced code. The writing guide states its rules in RFC 2119 key words and makes atomic a test: the writer MUST name the subject of every paragraph and every rule before drafting, split by that list, and add the style last.
 
 ### Added — splits and memory type on update
 
