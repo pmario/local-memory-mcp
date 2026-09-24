@@ -41,6 +41,8 @@ describe('MEMORY_REQUIRE_STYLE=0', () => {
     const tool = toMcpToolList().find((t) => t.name === 'memory_learn')!;
     expect((tool.inputSchema as { required?: string[] }).required ?? []).not.toContain('style');
     expect(tool.description).not.toContain('required');
+    expect(tool.description).not.toContain('REQUIRED');
+    expect(tool.description).toContain('OPTIONAL');
   });
 
   it('stores a new learning without style as unstyled', async () => {

@@ -50,8 +50,8 @@ const noInputSchema = z.object({}).strict();
 
 // What the write tools say about style, following the MEMORY_REQUIRE_STYLE start switch.
 const STYLE_RULE = STYLE_REQUIRED
-  ? 'style ["atomic", "factual"] is required, passed only after checking the text against memory_guide({topic: "writing"})'
-  : 'pass style ["atomic", "factual"] only after checking the text against memory_guide({topic: "writing"}); without it the entry is stored unchecked';
+  ? 'style ["atomic", "factual"] is REQUIRED and MUST NOT be passed before checking the text against memory_guide({topic: "writing"})'
+  : 'style ["atomic", "factual"] is OPTIONAL and MUST NOT be passed before checking the text against memory_guide({topic: "writing"}); without it the entry is stored unchecked';
 
 interface ToolDef {
   name: string;
@@ -75,7 +75,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn',
-    description: `Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates. Write it atomic (one subject) and factual (all the facts, no story): ${STYLE_RULE}. A factual text with an appended AMENDED, SUPERSEDED, CORRECTED, UPDATE or ADDENDUM section is refused. A part split out of another learning passes splitFrom (the hub's full id) and links the hub with [[id8]].`,
+    description: `Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates. The text MUST be atomic (one subject) and factual (all the facts, no story): ${STYLE_RULE}. A factual text with an appended AMENDED, SUPERSEDED, CORRECTED, UPDATE or ADDENDUM section is refused. A part split out of another learning MUST pass splitFrom (the hub's full id) and MUST link the hub with [[id8]].`,
     schema: learnSchema,
     handler: (input) => learn(input as z.infer<typeof learnSchema>),
   },
@@ -93,7 +93,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn_update',
-    description: `Edit a live learning (content, confidence, tags, project, category, style, splitFrom, memoryType). project null unscopes it; splitFrom null takes it out of a split. Re-embeds atomically when content changes. For a content rewrite ${STYLE_RULE}; it states the current state instead of appending a correction section. A hub's text links every part, a part's text links its hub.`,
+    description: `Edit a live learning (content, confidence, tags, project, category, style, splitFrom, memoryType). project null unscopes it; splitFrom null takes it out of a split. Re-embeds atomically when content changes. For a content rewrite ${STYLE_RULE}; the rewrite MUST state the current state and MUST NOT append a correction section. A hub's text MUST link every part, and a part's text MUST link its hub.`,
     schema: learnUpdateSchema,
     handler: (input) => learnUpdate(input as z.infer<typeof learnUpdateSchema>),
   },

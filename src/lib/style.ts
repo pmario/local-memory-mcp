@@ -15,7 +15,7 @@ export const STYLE_REQUIRED = process.env.MEMORY_REQUIRE_STYLE !== '0';
 export const zStyle = z.array(z.enum(STYLES));
 
 const STYLE_REQUIRED_MESSAGE =
-  'A learning text declares style ["atomic", "factual"], passed only after checking the text against memory_guide({topic: "writing"}).';
+  'A learning text MUST declare style ["atomic", "factual"], and MUST NOT pass it before checking the text against memory_guide({topic: "writing"}).';
 
 /** True when `style` holds every known value. */
 export function isChecked(style: readonly unknown[]): boolean {
@@ -45,7 +45,7 @@ export function hasAmendmentSection(content: string): boolean {
 
 export const AMENDMENT_ERROR = {
   success: false as const,
-  error: 'A factual entry states the current state: rewrite the text instead of appending an AMENDED, SUPERSEDED, CORRECTED, UPDATE or ADDENDUM section.',
+  error: 'A factual entry MUST state the current state: rewrite the text, and MUST NOT append an AMENDED, SUPERSEDED, CORRECTED, UPDATE or ADDENDUM section.',
   code: 'AMENDMENT_SECTION',
 };
 

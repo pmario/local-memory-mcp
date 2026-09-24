@@ -51,7 +51,11 @@ describe('style is required at the tool boundary', () => {
     const { learnSchema } = await import('./learn.js');
     const r = learnSchema.safeParse({ category: 'pattern', content: 'x' });
     expect(r.success).toBe(false);
-    if (!r.success) expect(r.error.issues.map((i) => i.message).join(' ')).toContain('memory_guide({topic: "writing"})');
+    if (!r.success) {
+      const message = r.error.issues.map((i) => i.message).join(' ');
+      expect(message).toContain('memory_guide({topic: "writing"})');
+      expect(message).toContain('MUST');
+    }
   });
 
   it('memory_learn needs both values, in any order', async () => {
@@ -78,11 +82,11 @@ describe('style is required at the tool boundary', () => {
     expect(bulk.properties.items.items.required).toContain('style');
   });
 
-  it('the write-tool descriptions say style is required', async () => {
+  it('the write-tool descriptions say style is required, in RFC 2119 key words (local-memory-mcp-jz8)', async () => {
     const { toMcpToolList } = await import('./registry.js');
     for (const name of ['memory_learn', 'memory_learn_update', 'memory_learn_bulk']) {
       const description = toMcpToolList().find((t) => t.name === name)!.description;
-      expect(description).toContain('required');
+      expect(description).toContain('is REQUIRED and MUST NOT be passed before checking');
       expect(description).not.toContain('stored with style');
       expect(description).not.toContain('stored as style');
     }

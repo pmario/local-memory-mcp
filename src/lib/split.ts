@@ -21,12 +21,12 @@ export function checkPart(db: Database.Database, partId: string | null, hubId: s
   const hub = db.prepare('SELECT id, split_from FROM learnings WHERE id = ?').get(hubId) as
     | { id: string; split_from: string | null }
     | undefined;
-  if (!hub) return { success: false, error: `Hub ${hubId} not found; splitFrom takes the full id.`, code: 'HUB_NOT_FOUND' };
+  if (!hub) return { success: false, error: `Hub ${hubId} not found; splitFrom MUST be the hub's full id.`, code: 'HUB_NOT_FOUND' };
   if (hub.id === partId || hub.split_from !== null || (partId !== null && activeParts(db, partId).length > 0)) {
-    return { success: false, error: 'A split has one level: a hub is not a part, and a part is not a hub.', code: 'NESTED_SPLIT' };
+    return { success: false, error: 'A split has one level: a hub MUST NOT be a part, and a part MUST NOT be a hub.', code: 'NESTED_SPLIT' };
   }
   if (!links(content, hubId)) {
-    return { success: false, error: `A part links its hub: add [[${id8(hubId)}]] to the text.`, code: 'SPLIT_LINK_MISSING' };
+    return { success: false, error: `A part MUST link its hub: add [[${id8(hubId)}]] to the text.`, code: 'SPLIT_LINK_MISSING' };
   }
   return null;
 }
@@ -37,7 +37,7 @@ export function checkHub(db: Database.Database, hubId: string, content: string):
   if (missing.length === 0) return null;
   return {
     success: false,
-    error: `A hub links every active part; missing: ${missing.map((id) => `[[${id8(id)}]]`).join(', ')}.`,
+    error: `A hub MUST link every active part; missing: ${missing.map((id) => `[[${id8(id)}]]`).join(', ')}.`,
     code: 'SPLIT_LINK_MISSING',
   };
 }
