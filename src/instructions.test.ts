@@ -122,6 +122,16 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
     }
   });
 
+  it('the writing topic defines project as scope, not provenance (local-memory-mcp-ler)', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    expect(content).toContain('`project` is the scope a learning applies to');
+    expect(content).toContain('rules that hold across projects');
+    expect(content).not.toContain('SHOULD be set as provenance');
+  });
+
   it('the writing topic defines source and how a part fills it (local-memory-mcp-ag7)', async () => {
     const { guide } = await import('./tools/insights.js');
     const result = guide({ topic: 'writing' });

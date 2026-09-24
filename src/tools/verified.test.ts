@@ -97,6 +97,15 @@ describe('a new learning is confirmed by being stored', () => {
   });
 });
 
+describe('memory_get shows the fields a split part copies from its hub (local-memory-mcp-ler)', () => {
+  it('returns source when the learning has one, and leaves it out otherwise', async () => {
+    const withSource = await storeOld('Found in a handoff.', { source: 'HANDOFF_x_2026-09-24.md' });
+    const without = await storeOld('No provenance given.');
+    expect((await shown(withSource)).source).toBe('HANDOFF_x_2026-09-24.md');
+    expect(await shown(without)).not.toHaveProperty('source');
+  });
+});
+
 describe('memory_learn_update with verified: true', () => {
   it('confirms without a content change: verified 1, verified_at now, no history version', async () => {
     const { learnUpdate } = await import('./learn.js');
