@@ -159,6 +159,37 @@ describe('import-md --update against a --sync tree', () => {
 	});
 });
 
+describe('confirmation state through the tree (local-memory-mcp-4ip)', () => {
+	it('carries a confirmation to the other machine, and an older tree never clears it', async () => {
+		// Machine A confirms L_USED without changing its text.
+		const machineA = join(tmp, 'verified-a.sqlite');
+		cpSync(store, machineA);
+		process.env.MEMORY_DB_PATH = machineA;
+		const client = await import('../../src/db/client.ts');
+		const { learnUpdate } = await import('../../src/tools/learn.ts');
+		expect((await learnUpdate({ learningId: L_USED, verified: true })).success).toBe(true);
+		const confirmed = client.getDb().prepare('SELECT verified, verified_at FROM learnings WHERE id = ?').get(L_USED);
+		client.closeDb();
+		expect(confirmed.verified).toBe(1);
+
+		const treeA = join(tmp, 'verified-tree');
+		expect(run(EXPORT, ['--sync', '-e', treeA, '--db', machineA]).status).toBe(0);
+		const machineB = join(tmp, 'verified-b.sqlite');
+		cpSync(store, machineB);
+		const apply = run(IMPORT, [treeA, '--db', machineB, '--apply', '--update']);
+		expect(apply.status, apply.stderr + apply.stdout).toBe(0);
+
+		// The first tree, exported before the confirmation, must not undo it on B.
+		const old = run(IMPORT, [tree, '--db', machineB, '--apply', '--update']);
+		expect(old.status, old.stderr + old.stdout).toBe(0);
+		process.env.MEMORY_DB_PATH = machineB;
+		const onB = client.getDb().prepare('SELECT verified, verified_at FROM learnings WHERE id = ?').get(L_USED);
+		client.closeDb();
+		delete process.env.MEMORY_DB_PATH;
+		expect(onB).toEqual(confirmed);
+	});
+});
+
 describe('learning history through the tree (local-memory-mcp-mnb)', () => {
 	it('carries the version made on one machine to the other, without a second one recorded there', async () => {
 		// Machine A rewrites L_USED, which records the old text as a version.

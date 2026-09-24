@@ -674,6 +674,17 @@ if (doUpdate && existsSync(targetDb)) {
 				else sqlUpdates.push({ what: `learning ${l.id}: ${lifecycle.slice(0, 40)}`, sql: 'UPDATE learnings SET archived = ?, archived_at = ?, lifecycle_state = ? WHERE id = ?', args: [archived, archivedAt, lifecycle, l.id] });
 			}
 		}
+		// The machine that rewrote or confirmed a text decided its confirmation state; the rewrite applied above would decide it again.
+		// Without a synced rewrite it only moves forward, so an older tree never clears a newer confirmation.
+		const verified = l.verified === true || l.verified === 1 ? 1 : 0;
+		const verifiedAt = orNull(l.verifiedAt);
+		const newer = verifiedAt !== null && (r.verified_at === null || verifiedAt > r.verified_at);
+		if ((set.content && r.archived === 0) || newer) {
+			if (!isoish(verifiedAt)) updateWarnings.push(`${l.id}: verifiedAt ${JSON.stringify(verifiedAt)} is not one the server writes`);
+			else if (verified !== r.verified || verifiedAt !== r.verified_at || set.content) {
+				sqlUpdates.push({ what: `learning ${l.id}: verified ${verified} at ${verifiedAt}`, sql: 'UPDATE learnings SET verified = ?, verified_at = ? WHERE id = ?', args: [verified, verifiedAt, l.id] });
+			}
+		}
 		for (const [field, tree, db] of [
 			['source', l.source ?? null, r.source],
 			['date', l.date, r.date],

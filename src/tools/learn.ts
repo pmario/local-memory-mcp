@@ -53,6 +53,15 @@ const zSource = z
   )
   .optional();
 
+// Last confirmed at (local-memory-mcp-4ip); a new learning leaves it empty, which reads as its date.
+const zVerifiedAt = z
+  .string()
+  .refine((v) => !Number.isNaN(Date.parse(v)), { message: 'verifiedAt must be a date, e.g. "2026-09-24 10:00:00"' })
+  .describe(
+    "When the facts were last confirmed, UTC. A new finding leaves it out: storing it is its first confirmation. A part split out of a hub passes the hub's verifiedAt, or the hub's date when the hub has none, because a split confirms nothing."
+  )
+  .optional();
+
 export const learnSchema = z.object({
   category: z.enum(LEARNING_CATEGORIES as [LearningCategory, ...LearningCategory[]]),
   content: z.string().min(1).max(10000),
@@ -64,6 +73,7 @@ export const learnSchema = z.object({
   style: zWrittenStyle,
   // The full id of the hub this entry was split out of.
   splitFrom: z.string().min(1).optional(),
+  verifiedAt: zVerifiedAt,
 });
 
 /**
@@ -136,8 +146,8 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
   const tx = db.transaction(() => {
     db.prepare(
       `INSERT INTO learnings
-       (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json, split_from)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json, split_from, verified_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       nowIso(),
@@ -149,7 +159,8 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
       input.source ?? null,
       memoryType,
       JSON.stringify(style),
-      input.splitFrom ?? null
+      input.splitFrom ?? null,
+      input.verifiedAt ?? null
     );
     writeEmbeddingSync(db, id, 'learning', vec);
   });
@@ -265,16 +276,22 @@ export const learnUpdateSchema = z.object({
   // null ends the entry's membership in a split.
   splitFrom: z.string().min(1).nullable().optional(),
   memoryType: z.enum(['episodic', 'semantic']).optional(),
+  verified: z
+    .boolean()
+    .describe(
+      'true only when the work at hand already re-confirmed every fact the entry states (it re-ran the measurement, test or probe, or re-read the cited source); never start a check just to set it. Sets verifiedAt to now, with or without a content change. A content change without it only marks the text as changed since its last confirmation.'
+    )
+    .optional(),
 });
 
 export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Promise<ToolResult> {
   const db = getDb();
 
   const fields = ['content', 'confidence', 'tags', 'project', 'category', 'style', 'splitFrom', 'memoryType'] as const;
-  if (fields.every((f) => input[f] === undefined)) {
+  if (fields.every((f) => input[f] === undefined) && input.verified !== true) {
     return {
       success: false,
-      error: 'At least one of content, confidence, tags, project, category, style, splitFrom or memoryType must be provided.',
+      error: 'At least one of content, confidence, tags, project, category, style, splitFrom, memoryType or verified: true must be provided.',
       code: 'NOTHING_TO_UPDATE',
     };
   }
@@ -353,6 +370,13 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
   if (input.tags !== undefined) {
     updates.push('tags_json = ?');
     args.push(JSON.stringify(input.tags));
+  }
+  // An empty verified_at means confirmed at creation, so a change first pins that date (local-memory-mcp-4ip).
+  if (input.verified === true) {
+    updates.push('verified = 1', 'verified_at = ?');
+    args.push(nowIso());
+  } else if (willChangeContent) {
+    updates.push('verified = 0', 'verified_at = COALESCE(verified_at, date)');
   }
 
   args.push(input.learningId);
@@ -434,6 +458,7 @@ export const learnBulkSchema = z.object({
         memoryType: z.enum(['episodic', 'semantic']).optional(),
         style: zWrittenStyle,
         splitFrom: z.string().min(1).optional(),
+        verifiedAt: zVerifiedAt,
       })
     )
     .min(1)
@@ -504,8 +529,8 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
       const memoryType = it.memoryType ?? classifyMemoryType(it.content, it.category);
       db.prepare(
         `INSERT INTO learnings
-         (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json, split_from)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json, split_from, verified_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         p.id,
         nowIso(),
@@ -517,7 +542,8 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
         it.source ?? null,
         memoryType,
         JSON.stringify(knownStyles(it.style ?? [])),
-        it.splitFrom ?? null
+        it.splitFrom ?? null,
+        it.verifiedAt ?? null
       );
       writeEmbeddingSync(db, p.id, 'learning', vecMap.get(p.id) ?? null);
       results.push({ index: p.index, id: p.id, action: 'added' });

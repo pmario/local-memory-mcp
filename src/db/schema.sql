@@ -54,8 +54,8 @@ CREATE TABLE IF NOT EXISTS learnings (
   last_used       TEXT,
   confidence      REAL NOT NULL DEFAULT 0.7,
   source          TEXT, -- provenance: where the finding came from; set once, a split part copies its hub's
-  verified        INTEGER NOT NULL DEFAULT 0,
-  verified_at     TEXT,
+  verified        INTEGER NOT NULL DEFAULT 0, -- 1: the current text is the one confirmed at verified_at
+  verified_at     TEXT, -- last confirmed at; empty reads as date, because storing is the first confirmation
   archived        INTEGER NOT NULL DEFAULT 0,
   archived_at     TEXT,
   importance      REAL,
