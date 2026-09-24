@@ -122,6 +122,15 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
     }
   });
 
+  it('the writing topic names a version and platform only when the source records them', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    expect(content).toContain('the version and platform when the source records them');
+    expect(content).toContain('MUST NOT infer them and MUST NOT state that they are missing');
+  });
+
   it('the writing topic defines project as scope, not provenance (local-memory-mcp-ler)', async () => {
     const { guide } = await import('./tools/insights.js');
     const result = guide({ topic: 'writing' });
