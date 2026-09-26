@@ -33,6 +33,7 @@ import { getDb, escapeFtsQuery } from '../db/client.js';
 import { isVectorEnabled } from '../db/vector.js';
 import { embedQuery, EMBEDDING_DIM } from '../lib/embed.js';
 import { headline } from '../lib/brief.js';
+import { countReads } from '../lib/reads.js';
 import { zStyle } from '../lib/style.js';
 import type { ToolResult } from '../lib/types.js';
 
@@ -544,6 +545,7 @@ export async function search(input: z.infer<typeof searchSchema>): Promise<ToolR
         ? { id: r.id, type: r.type, title: r.title, headline: headline(r.body), rank: r.rank }
         : { id: r.id, type: r.type, title: r.title, body: r.body, rank: r.rank }
     );
+    if (!brief) countReads(getDb(), rows.filter((r) => r.type === 'learning').map((r) => r.id));
 
     return {
       success: true,

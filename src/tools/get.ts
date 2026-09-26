@@ -9,6 +9,7 @@ import { parseStyle } from '../lib/style.js';
 import { activeParts } from '../lib/split.js';
 import { VERSIONED_COLUMNS, currentSince } from '../lib/history.js';
 import { headline } from '../lib/brief.js';
+import { countReads } from '../lib/reads.js';
 import type { ToolResult } from '../lib/types.js';
 
 export const getSchema = z.object({
@@ -45,6 +46,7 @@ interface LearningRow {
   verified: number;
   verified_at: string | null;
   source: string | null;
+  rechecked_at: string | null;
 }
 
 interface SessionRow {
@@ -106,7 +108,7 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
   const learnings = db
     .prepare(
       `SELECT id, date, category, content, project, tags_json, style_json, confidence, memory_type, lifecycle_state, archived, split_from,
-              verified, verified_at, source
+              verified, verified_at, source, rechecked_at
        FROM learnings WHERE id IN (${placeholders})`
     )
     .all(...ids) as LearningRow[];
@@ -148,7 +150,7 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
         version = { recordedAt: recorded_at, expiredAt: expired_at };
       }
     }
-    const { tags_json, style_json, archived, split_from, verified, verified_at, source, ...row } = learning;
+    const { tags_json, style_json, archived, split_from, verified, verified_at, source, rechecked_at, ...row } = learning;
     const parts = input.asOf === undefined ? activeParts(db, row.id) : [];
     const history = input.history
       ? (versionsOf.all(row.id) as VersionRow[]).map((v) => ({
@@ -170,6 +172,8 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
       verifiedAt: verified_at ?? row.date,
       // A split part copies its hub's source, so the writer has to be able to read it.
       ...(source !== null ? { source } : {}),
+      // The mark belongs to the current text, so an earlier version does not show it.
+      ...(rechecked_at !== null && (version === undefined || version.expiredAt === null) ? { recheckedAt: rechecked_at } : {}),
       ...(split_from !== null ? { splitFrom: split_from } : {}),
       ...(parts.length > 0 ? { parts } : {}),
       ...(version ? { version } : {}),
@@ -191,6 +195,7 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
       `UPDATE learnings SET usage_count = usage_count + 1, last_used = ?
        WHERE id IN (${opened.map(() => '?').join(',')})`
     ).run(nowIso(), ...opened);
+    countReads(db, opened);
   }
 
   const results = ids.filter((id) => found.has(id)).map((id) => found.get(id));

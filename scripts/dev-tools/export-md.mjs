@@ -76,7 +76,7 @@ Options:
   --db <path>       source database
                     (default: MEMORY_DB_PATH env, else <data-dir>/memory.sqlite)
   --sync            a tree two machines can merge in git: leaves out
-                    machine-local values (learning usageCount/lastUsed,
+                    machine-local values (learning usageCount/lastUsed/readCount,
                     entity updated, meta provenance), INDEX.md and
                     sessions that have not ended yet
   --dry-run         explicit dry run (same as the default)
@@ -117,7 +117,7 @@ const db = new Database(dbPath, { readonly: true });
 // lose data. Refuse instead, and name what changed. (A removed or renamed
 // column already fails loudly in the SELECT.)
 const EXPECTED_COLUMNS = {
-	learnings: ['id', 'date', 'category', 'content', 'project', 'tags_json', 'usage_count', 'last_used', 'confidence', 'source', 'verified', 'verified_at', 'archived', 'archived_at', 'importance', 'lifecycle_state', 'memory_type', 'style_json', 'split_from'],
+	learnings: ['id', 'date', 'category', 'content', 'project', 'tags_json', 'usage_count', 'last_used', 'confidence', 'source', 'verified', 'verified_at', 'archived', 'archived_at', 'importance', 'lifecycle_state', 'memory_type', 'style_json', 'split_from', 'rechecked_at', 'read_count'],
 	decisions: ['id', 'date', 'title', 'decision', 'alternatives', 'reasoning', 'project', 'tags_json', 'confidence', 'source', 'verified', 'verified_at'],
 	entities: ['id', 'name', 'entity_type', 'created_at', 'updated_at', 'summary', 'confidence'],
 	entity_observations: ['id', 'entity_id', 'content', 'source', 'session_id', 'valid_from', 'valid_to', 'confidence', 'created_at'],
@@ -285,7 +285,7 @@ const skippedEntityIds = new Set();
 const learnings = db.prepare(
 	`SELECT id, date, category, content, project, tags_json, usage_count, last_used,
 	        confidence, source, verified, verified_at, archived, archived_at,
-	        importance, lifecycle_state, memory_type, style_json, split_from
+	        importance, lifecycle_state, memory_type, style_json, split_from, rechecked_at, read_count
 	 FROM learnings ORDER BY date, id`
 ).all();
 for (const l of learnings) {
@@ -303,10 +303,12 @@ for (const l of learnings) {
 			// rewrite the same files on every sync.
 			usageCount: syncMode ? undefined : l.usage_count,
 			lastUsed: syncMode ? undefined : l.last_used,
+			readCount: syncMode ? undefined : l.read_count,
 			confidence: l.confidence,
 			source: l.source,
 			verified: l.verified,
 			verifiedAt: l.verified_at,
+			recheckedAt: l.rechecked_at,
 			archived: l.archived,
 			archivedAt: l.archived_at,
 			importance: l.importance,

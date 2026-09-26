@@ -12,6 +12,7 @@ import { getDb } from '../db/client.js';
 import { vectorStatus } from '../db/vector.js';
 import { embedMode, embedModelId, EMBEDDING_DIM } from '../lib/embed.js';
 import { STYLES } from '../lib/style.js';
+import { assess, signalContext } from '../signals/index.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── insights ────────────────────────────────────────
@@ -67,6 +68,38 @@ export function insights(input: z.infer<typeof insightsSchema>): ToolResult {
 
 // ─── health ──────────────────────────────────────────
 
+const QUEUE_LENGTH = 10;
+
+/**
+ * The re-check queue (local-memory-mcp-w8u): active learnings not re-checked since their last content change,
+ * the flagged ones among them, and the next few as [id8, score, reads, hard signals?], most-read first, since a
+ * defect costs tokens on every read.
+ */
+function recheckQueue(db: ReturnType<typeof getDb>) {
+  const rows = db
+    .prepare('SELECT id, content, category, read_count FROM learnings WHERE archived = 0 AND rechecked_at IS NULL')
+    .all() as Array<{ id: string; content: string; category: string; read_count: number }>;
+  const versions = new Map<string, string[]>();
+  for (const v of db.prepare('SELECT learning_id, content FROM learnings_history ORDER BY learning_id, expired_at, rowid').all() as Array<{
+    learning_id: string;
+    content: string;
+  }>) {
+    const list = versions.get(v.learning_id) ?? [];
+    list.push(v.content);
+    versions.set(v.learning_id, list);
+  }
+  const flagged = rows
+    .map((r) => ({ r, a: assess(signalContext([...(versions.get(r.id) ?? []), r.content], r.category)) }))
+    .filter(({ a }) => a.flagged)
+    .map(({ r, a }) => ({ id8: r.id.slice(0, 8), score: a.score, reads: r.read_count, hard: a.hard }))
+    .sort((a, b) => b.reads - a.reads || b.score - a.score || (a.id8 < b.id8 ? -1 : 1));
+  return {
+    pending: rows.length,
+    flagged: flagged.length,
+    next: flagged.slice(0, QUEUE_LENGTH).map((e) => [e.id8, e.score, e.reads, ...(e.hard.length > 0 ? [e.hard.join(',')] : [])]),
+  };
+}
+
 export function health(): ToolResult {
   const db = getDb();
 
@@ -119,6 +152,7 @@ export function health(): ToolResult {
         model: embedModelId(),
       },
       styles,
+      recheck: recheckQueue(db),
     },
     message: integrity === 'ok'
       ? `All healthy. Hybrid: ${vec.enabled && embedMode() !== 'disabled' ? 'on' : 'off (FTS5-only)'}.`
@@ -272,6 +306,8 @@ Before writing, the writer MUST run \`memory_search\` on the subject. When an en
 Metadata decides how an entry is found and filtered. The writer MUST pass \`memoryType\` (semantic for what is true, episodic for what happened): without it the classifier marks every \`mistake\` entry episodic, and any other entry whose text contains today, heute, yesterday, gestern, happened, passiert, incident, vorfall, just now or gerade; \`memory_learn_update\` can correct it afterwards. The category MUST come from the fixed list. \`project\` is the scope a learning applies to: it SHOULD name the project whose code or conventions the finding is about, and SHOULD be left empty for rules that hold across projects, such as rules about the machine, a tool or how the assistant works; where the finding came from belongs in \`source\` and the text. \`memory_learn_update\` can change project and category later. Tags SHOULD be useful as filters. \`source\` is provenance: it SHOULD name where the finding came from (a handoff, file, test or URL), and it is set once, because \`memory_learn_update\` cannot change it. A part split out of a hub SHOULD copy the hub's \`source\`; \`source\` MUST NOT record the split, which is what \`splitFrom\` is for. A measured fact MUST carry the date it was measured, and the version and platform when the source records them; a writer MUST NOT infer them and MUST NOT state that they are missing.
 
 \`verified_at\` records when a learning's facts were last confirmed, and \`verified\` whether the current text is the confirmed one. Storing a learning is its first confirmation, so an empty \`verified_at\` reads as the learning's \`date\`. A new learning MUST NOT pass \`verifiedAt\`; a split part SHOULD pass its hub's \`verifiedAt\`, or the hub's \`date\` when that is empty. \`memory_learn_update\` MAY pass \`verified: true\`, with or without a content change, only when the work at hand already re-confirmed every fact the entry states; a writer MUST NOT start a measurement, test or source reading to set it. Every content change without \`verified: true\`, a typo fix included, sets \`verified\` to 0 and keeps \`verified_at\`, which the server first sets to \`date\` when it is empty. A metadata change, a style-only update and \`splitFrom\` leave both fields alone. A writer who doubts a fact it cannot check SHOULD lower \`confidence\` and name the doubt in the text.
+
+A write answers with a \`notice\` when the text cites a scratch path, hedges (likely, probably, possibly, presumably, seems to, appears to) or, in an update, adds paragraphs while keeping every old one; the writer SHOULD fix the text while it is still in context. \`rechecked_at\` records the last re-check of the current text: \`memory_learn_update\` MAY pass \`rechecked: true\` only when the work at hand checked that text against this guide in a per-draft table, and the same call fixes any defect found, in the text or the style. A content change without it clears the mark. \`memory_health\` lists under \`recheck\` the learnings not re-checked since their last change that a scratch path, a hedge or a risk score of 3 or more flags, most-read first; a re-check SHOULD start there.
 
 Splitting follows an order that keeps every subject in the store: the writer MUST store the split-off parts first, each with \`splitFrom\` set to the original's full id and a [[id8]] link to it, then rewrite the original to keep the subject a search most likely lands on, so that the original links every part. The server refuses a part that does not link its hub and a hub write that misses an active part, and a split has one level. The original MUST NOT be rewritten before its parts exist.
 

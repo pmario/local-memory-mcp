@@ -93,7 +93,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn_update',
-    description: `Edit a live learning (content, confidence, tags, project, category, style, splitFrom, memoryType, verified). project null unscopes it; splitFrom null takes it out of a split. Re-embeds atomically when content changes. For a content rewrite ${STYLE_RULE}; the rewrite MUST state the current state and MUST NOT append a correction section. A hub's text MUST link every part, and a part's text MUST link its hub.`,
+    description: `Edit a live learning (content, confidence, tags, project, category, style, splitFrom, memoryType, verified, rechecked). project null unscopes it; splitFrom null takes it out of a split. Re-embeds atomically when content changes. For a content rewrite ${STYLE_RULE}; the rewrite MUST state the current state and MUST NOT append a correction section. A hub's text MUST link every part, and a part's text MUST link its hub.`,
     schema: learnUpdateSchema,
     handler: (input) => learnUpdate(input as z.infer<typeof learnUpdateSchema>),
   },
@@ -213,7 +213,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_health',
-    description: 'SQLite integrity check + page-count + DB-size + WAL status, plus active learnings per style and the longest ones not yet factual. No input.',
+    description: 'SQLite integrity check + page-count + DB-size + WAL status, plus active learnings per style, the longest ones not yet factual, and the re-check queue: flagged learnings not re-checked since their last change, most-read first. No input.',
     schema: noInputSchema,
     handler: () => health(),
   },

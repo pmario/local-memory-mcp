@@ -101,6 +101,12 @@ export function getDb(): Database.Database {
   if (!learningColumns.some((c) => c.name === 'split_from')) {
     db.exec('ALTER TABLE learnings ADD COLUMN split_from TEXT');
   }
+  if (!learningColumns.some((c) => c.name === 'rechecked_at')) {
+    db.exec('ALTER TABLE learnings ADD COLUMN rechecked_at TEXT');
+  }
+  if (!learningColumns.some((c) => c.name === 'read_count')) {
+    db.exec('ALTER TABLE learnings ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0');
+  }
   // Here rather than in schema.sql, which runs before an older table has the column.
   db.exec('CREATE INDEX IF NOT EXISTS idx_learnings_split_from ON learnings(split_from)');
 

@@ -190,6 +190,55 @@ describe('confirmation state through the tree (local-memory-mcp-4ip)', () => {
 	});
 });
 
+describe('re-check state and reads through the tree (local-memory-mcp-w8u)', () => {
+	it('carries a re-check mark to the other machine, an older tree never clears it, and reads stay local', async () => {
+		// Machine A re-checks L_USED without changing its text and opens it once.
+		const machineA = join(tmp, 'recheck-a.sqlite');
+		cpSync(store, machineA);
+		process.env.MEMORY_DB_PATH = machineA;
+		const client = await import('../../src/db/client.ts');
+		const { learnUpdate } = await import('../../src/tools/learn.ts');
+		const { memoryGet } = await import('../../src/tools/get.ts');
+		let onA;
+		try {
+			expect((await learnUpdate({ learningId: L_USED, rechecked: true })).success).toBe(true);
+			memoryGet({ ids: [L_USED] });
+			onA = client.getDb().prepare('SELECT rechecked_at, read_count FROM learnings WHERE id = ?').get(L_USED);
+		} finally {
+			// Leaves the shared store env clean for the next describe, even when an assertion above fails.
+			client.closeDb();
+			delete process.env.MEMORY_DB_PATH;
+		}
+		expect(onA.rechecked_at).not.toBeNull();
+		expect(onA.read_count).toBe(1);
+
+		const treeA = join(tmp, 'recheck-tree');
+		expect(run(EXPORT, ['--sync', '-e', treeA, '--db', machineA]).status).toBe(0);
+		const synced = readFileSync(fileEndingIn(treeA, 'learnings', L_USED), 'utf8');
+		expect(synced).toContain(`recheckedAt: ${onA.rechecked_at}`);
+		expect(synced).not.toMatch(/^readCount:/m);
+		const full = join(tmp, 'recheck-full');
+		expect(run(EXPORT, ['-e', full, '--db', machineA]).status).toBe(0);
+		expect(readFileSync(fileEndingIn(full, 'learnings', L_USED), 'utf8')).toMatch(/^readCount: 1$/m);
+
+		const machineB = join(tmp, 'recheck-b.sqlite');
+		cpSync(store, machineB);
+		const dry = run(IMPORT, [treeA, '--db', machineB, '--update']);
+		expect(dry.stdout).toContain(`    learning ${L_USED}: rechecked at ${onA.rechecked_at}`);
+		expect(run(IMPORT, [treeA, '--db', machineB, '--apply', '--update']).status).toBe(0);
+		// The first tree, exported before the re-check, must not undo it on B.
+		expect(run(IMPORT, [tree, '--db', machineB, '--apply', '--update']).status).toBe(0);
+		process.env.MEMORY_DB_PATH = machineB;
+		const onB = client.getDb().prepare('SELECT rechecked_at, read_count FROM learnings WHERE id = ?').get(L_USED);
+		client.closeDb();
+		delete process.env.MEMORY_DB_PATH;
+		expect(onB).toEqual({ rechecked_at: onA.rechecked_at, read_count: 0 });
+
+		const ver = run(IMPORT, [treeA, '--db', machineB, '--verify']);
+		expect(ver.stdout).toContain('VERIFY: perfect round-trip, 0 mismatches.');
+	});
+});
+
 describe('learning history through the tree (local-memory-mcp-mnb)', () => {
 	it('carries the version made on one machine to the other, without a second one recorded there', async () => {
 		// Machine A rewrites L_USED, which records the old text as a version.

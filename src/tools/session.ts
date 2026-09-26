@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { getDb, newId, nowIso } from '../db/client.js';
 import { firstParagraph, headline } from '../lib/brief.js';
+import { countReads } from '../lib/reads.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── session_start ───────────────────────────────────
@@ -60,6 +61,7 @@ export function sessionStart(input: z.infer<typeof sessionStartSchema>): ToolRes
        LIMIT 5`
     )
     .all(...(scoped ? [input.project] : [])) as Array<{ id: string; category: string; content: string; date: string }>;
+  if (!brief) countReads(db, recentLearnings.map((l) => l.id));
 
   return {
     success: true,

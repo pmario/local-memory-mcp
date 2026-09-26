@@ -34,6 +34,8 @@ import {
 } from '../lib/style.js';
 import { checkHub, checkPart } from '../lib/split.js';
 import { withHistory } from '../lib/history.js';
+import { countReads } from '../lib/reads.js';
+import { signalContext, writeNotices } from '../signals/index.js';
 import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
 
 // Exported so memory_import can validate against the SAME set the interactive
@@ -75,6 +77,12 @@ export const learnSchema = z.object({
   splitFrom: z.string().min(1).optional(),
   verifiedAt: zVerifiedAt,
 });
+
+// Defects a writer can fix while the text is still in context (src/signals); a notice, never a refusal.
+function noticeField(versions: string[], category: string) {
+  const notices = writeNotices(signalContext(versions, category));
+  return notices.length > 0 ? { notice: notices.join(' ') } : {};
+}
 
 /**
  * Auto-classify memory type if not provided.
@@ -168,7 +176,7 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
 
   return {
     success: true,
-    data: { id, action: 'added', memoryType },
+    data: { id, action: 'added', memoryType, ...noticeField([input.content], input.category) },
     message: 'Learning saved.',
   };
 }
@@ -282,23 +290,29 @@ export const learnUpdateSchema = z.object({
       'true only when the work at hand already re-confirmed every fact the entry states (it re-ran the measurement, test or probe, or re-read the cited source); never start a check just to set it. Sets verifiedAt to now, with or without a content change. A content change without it only marks the text as changed since its last confirmation.'
     )
     .optional(),
+  rechecked: z
+    .boolean()
+    .describe(
+      'true only when the work at hand checked the current text against memory_guide({topic: "writing"}) in a per-draft table, whatever the result; a found defect is fixed in the same call, in the text or the style. Sets recheckedAt to now; false clears it, and so does a content change without it. memory_health lists the flagged entries not yet re-checked.'
+    )
+    .optional(),
 });
 
 export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Promise<ToolResult> {
   const db = getDb();
 
-  const fields = ['content', 'confidence', 'tags', 'project', 'category', 'style', 'splitFrom', 'memoryType'] as const;
+  const fields = ['content', 'confidence', 'tags', 'project', 'category', 'style', 'splitFrom', 'memoryType', 'rechecked'] as const;
   if (fields.every((f) => input[f] === undefined) && input.verified !== true) {
     return {
       success: false,
-      error: 'At least one of content, confidence, tags, project, category, style, splitFrom, memoryType or verified: true must be provided.',
+      error: 'At least one of content, confidence, tags, project, category, style, splitFrom, memoryType, rechecked or verified: true must be provided.',
       code: 'NOTHING_TO_UPDATE',
     };
   }
 
   const existing = db
-    .prepare('SELECT id, content, archived, split_from FROM learnings WHERE id = ?')
-    .get(input.learningId) as { id: string; content: string; archived: number; split_from: string | null } | undefined;
+    .prepare('SELECT id, content, category, archived, split_from FROM learnings WHERE id = ?')
+    .get(input.learningId) as { id: string; content: string; category: string; archived: number; split_from: string | null } | undefined;
 
   if (!existing) {
     return { success: false, error: 'Learning not found.', code: 'NOT_FOUND' };
@@ -319,8 +333,6 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
   const args: unknown[] = [nowIso()];
 
   const willChangeContent = input.content !== undefined && input.content !== existing.content;
-  // Brief results show only the first line, which an appended amendment leaves unchanged.
-  const appendedOnly = willChangeContent && (input.content as string).startsWith(existing.content);
   if (willChangeContent && STYLE_REQUIRED && !isChecked(input.style ?? [])) return STYLE_REQUIRED_ERROR;
   // A rewrite without a style is unchecked, whatever the old text was checked as.
   const style = willChangeContent ? knownStyles(input.style ?? []) : input.style && knownStyles(input.style);
@@ -378,6 +390,13 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
   } else if (willChangeContent) {
     updates.push('verified = 0', 'verified_at = COALESCE(verified_at, date)');
   }
+  // The re-check mark belongs to the text it checked (local-memory-mcp-w8u).
+  if (input.rechecked === true) {
+    updates.push('rechecked_at = ?');
+    args.push(nowIso());
+  } else if (input.rechecked === false || willChangeContent) {
+    updates.push('rechecked_at = NULL');
+  }
 
   args.push(input.learningId);
 
@@ -409,9 +428,7 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
       action: 'updated',
       reembedded: willChangeContent && vec !== null,
       contentChanged: willChangeContent,
-      ...(appendedOnly
-        ? { notice: 'Appended without changing the start: check that the first line still states the current claim, or rewrite the entry.' }
-        : {}),
+      ...(willChangeContent ? noticeField([existing.content, content], input.category ?? existing.category) : {}),
     },
     message: 'Learning updated.',
   };
@@ -509,7 +526,7 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
   newPlans.forEach((p, i) => vecMap.set(p.id, vecs[i] ?? null));
 
   // Phase 3 (sync, single transaction): bump dups, insert new + embedding.
-  const results: Array<{ index: number; id: string; action: 'added' | 'skipped_duplicate' }> = [];
+  const results: Array<{ index: number; id: string; action: 'added' | 'skipped_duplicate'; notice?: string }> = [];
   let added = 0;
   let skipped = 0;
 
@@ -546,7 +563,7 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
         it.verifiedAt ?? null
       );
       writeEmbeddingSync(db, p.id, 'learning', vecMap.get(p.id) ?? null);
-      results.push({ index: p.index, id: p.id, action: 'added' });
+      results.push({ index: p.index, id: p.id, action: 'added', ...noticeField([it.content], it.category) });
       added++;
     }
   });
@@ -585,6 +602,7 @@ function recallResult(rows: unknown[], detail: 'brief' | 'full' | undefined): To
     detail === 'brief'
       ? (rows as Array<{ content: string }>).map(({ content, ...row }) => ({ ...row, headline: headline(content) }))
       : rows;
+  if (detail !== 'brief') countReads(getDb(), (rows as Array<{ id: string }>).map((r) => r.id));
   return { success: true, data: { results, count: results.length } };
 }
 

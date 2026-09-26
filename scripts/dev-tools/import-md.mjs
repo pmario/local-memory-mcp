@@ -83,8 +83,9 @@ Options:
                           memory_learn_update, which re-embeds a changed
                           content; a changed content carries the tree's style);
                           entity summary (memory_entity_create);
-                          learning archive state, observation validTo,
-                          session end (written as the tree has them).
+                          learning archive state, confirmation and
+                          re-check mark, observation validTo, session end
+                          (written as the tree has them).
                         Lifecycle, style and splitFrom only move forward: an
                         archived learning, superseded observation or ended
                         session is never reopened, and no style value or
@@ -359,7 +360,7 @@ const learnings = [];
 // --update and --verify must never treat an envelope DEFAULT as a tree value,
 // so remember which fields the file itself carried.
 const fieldPresence = new Map();
-const ALL_PRESENT = { confidence: true, tags: true, archived: true, usageCount: true, lastUsed: true, style: true, splitFrom: true };
+const ALL_PRESENT = { confidence: true, tags: true, archived: true, usageCount: true, lastUsed: true, readCount: true, style: true, splitFrom: true };
 for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 	const p = parseFile(path);
 	if (!p.ok) { skip(path, p.reason, p.data); continue; }
@@ -371,6 +372,7 @@ for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 		archived: f.archived !== undefined,
 		usageCount: f.usageCount !== undefined,
 		lastUsed: f.lastUsed !== undefined,
+		readCount: f.readCount !== undefined,
 		style: f.style !== undefined,
 		splitFrom: f.splitFrom !== undefined,
 	});
@@ -394,6 +396,8 @@ for (const path of [...listMd('learnings'), ...listMd('learnings-archived')]) {
 		memoryType: f.memoryType ?? 'semantic',
 		style: f.style ?? [],
 		splitFrom: f.splitFrom ?? null,
+		recheckedAt: f.recheckedAt ?? null,
+		readCount: f.readCount ?? 0,
 	});
 }
 
@@ -685,6 +689,13 @@ if (doUpdate && existsSync(targetDb)) {
 				sqlUpdates.push({ what: `learning ${l.id}: verified ${verified} at ${verifiedAt}`, sql: 'UPDATE learnings SET verified = ?, verified_at = ? WHERE id = ?', args: [verified, verifiedAt, l.id] });
 			}
 		}
+		// The re-check mark (local-memory-mcp-w8u) follows the same rule; the rewrite applied above has already cleared it.
+		const recheckedAt = orNull(l.recheckedAt);
+		const newerCheck = recheckedAt !== null && (r.rechecked_at === null || recheckedAt > r.rechecked_at);
+		if ((set.content && r.archived === 0 && recheckedAt !== null) || (!set.content && newerCheck)) {
+			if (!isoish(recheckedAt)) updateWarnings.push(`${l.id}: recheckedAt ${JSON.stringify(recheckedAt)} is not one the server writes`);
+			else sqlUpdates.push({ what: `learning ${l.id}: rechecked at ${recheckedAt}`, sql: 'UPDATE learnings SET rechecked_at = ? WHERE id = ?', args: [recheckedAt, l.id] });
+		}
 		for (const [field, tree, db] of [
 			['source', l.source ?? null, r.source],
 			['date', l.date, r.date],
@@ -814,10 +825,12 @@ function runVerify() {
 		const present = fieldPresence.get(l.id) ?? ALL_PRESENT;
 		if (present.usageCount) compare('learning', l.id, 'usageCount', l.usageCount, r.usage_count);
 		if (present.lastUsed) compare('learning', l.id, 'lastUsed', l.lastUsed, r.last_used);
+		if (present.readCount) compare('learning', l.id, 'readCount', l.readCount, r.read_count);
 		compare('learning', l.id, 'confidence', l.confidence, r.confidence);
 		compare('learning', l.id, 'source', l.source, r.source);
 		compare('learning', l.id, 'verified', l.verified, r.verified);
 		compare('learning', l.id, 'verifiedAt', l.verifiedAt, r.verified_at);
+		compare('learning', l.id, 'recheckedAt', l.recheckedAt, r.rechecked_at);
 		compare('learning', l.id, 'archived', l.archived, r.archived);
 		compare('learning', l.id, 'archivedAt', l.archivedAt, r.archived_at);
 		compare('learning', l.id, 'importance', l.importance, r.importance);

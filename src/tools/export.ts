@@ -57,7 +57,8 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
       .prepare(
         `SELECT id, date, category, content, project, tags_json, usage_count,
                 last_used, confidence, source, verified, verified_at,
-                archived, archived_at, importance, lifecycle_state, memory_type, style_json, split_from
+                archived, archived_at, importance, lifecycle_state, memory_type, style_json, split_from,
+                rechecked_at, read_count
          FROM learnings ${archivedFilter} ORDER BY date`
       )
       .all() as Array<Record<string, unknown>>
@@ -81,6 +82,8 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
     memoryType: r.memory_type,
     style: parseStyle(r.style_json as string),
     splitFrom: r.split_from,
+    recheckedAt: r.rechecked_at,
+    readCount: r.read_count,
   }));
 
   // Earlier versions of the exported learnings (local-memory-mcp-mnb).
@@ -407,6 +410,8 @@ const importLearningSchema = z.object({
   // A newer exporter may know more styles: keep the known ones rather than reject the record.
   style: z.array(z.string()).nullish().transform((v) => knownStyles(v ?? [])),
   splitFrom: zId.nullish(),
+  recheckedAt: zIsoish,
+  readCount: zCount,
 });
 
 // An earlier version of a learning; both times are required, since they place it in the learning's history.
@@ -781,8 +786,8 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
       `INSERT OR IGNORE INTO learnings
        (id, date, category, content, project, tags_json, usage_count, last_used,
         confidence, source, verified, verified_at, archived, archived_at,
-        importance, lifecycle_state, memory_type, style_json, split_from)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        importance, lifecycle_state, memory_type, style_json, split_from, rechecked_at, read_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const l of validLearnings) {
       if (!l) { skipped.malformed++; continue; }
@@ -805,7 +810,9 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
         l.lifecycleState || 'active',
         l.memoryType || 'semantic',
         JSON.stringify(l.style),
-        l.splitFrom || null
+        l.splitFrom || null,
+        l.recheckedAt || null,
+        l.readCount ?? 0
       );
       if (info.changes > 0) {
         counts.learnings++;
