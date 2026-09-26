@@ -10,6 +10,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { SIGNALS, FLAG_SCORE, signalContext, writeNotices, assess, type Signal } from './index.js';
+import { hedge } from './hedge.js';
+import { hedgeRomance } from './hedge-romance.js';
 
 const notices = (text: string, previous?: string) => writeNotices(signalContext(previous === undefined ? [text] : [previous, text], 'research'));
 
@@ -26,6 +28,35 @@ describe('writeNotices', () => {
   it('names each hedge once, lowercased, and stays quiet on a measured statement', () => {
     expect(notices('It Probably holds, and likely on Windows too; it probably does.')[0]).toContain('(probably, likely)');
     expect(notices('Measured 2026-09-26: 3 of 3 runs returned 0.')).toEqual([]);
+  });
+
+  it('finds hedges in German, Spanish, Catalan, Portuguese, Italian and French, accented ones included', () => {
+    const hedges = (text: string) => notices(text)[0] ?? '';
+    expect(hedges('Der Aufruf schlägt vermutlich fehl, möglicherweise nur unter Windows.')).toContain('(vermutlich, möglicherweise)');
+    expect(hedges('La llamada probablemente falla; parece que solo en Windows.')).toContain('(probablemente, parece que)');
+    expect(hedges('La crida probablement falla; sembla que només a Windows.')).toContain('(probablement, sembla que)');
+    expect(hedges('A chamada provavelmente falha, possivelmente só no Windows.')).toContain('(provavelmente, possivelmente)');
+    expect(hedges('La chiamata probabilmente fallisce; sembra che accada solo su Windows.')).toContain('(probabilmente, sembra che)');
+    expect(hedges("L'appel échoue présumément, sans doute sous Windows.")).toContain('(présumément, sans doute)');
+  });
+
+  it('keeps English and German in hedge and the five Romance languages in hedge-romance', () => {
+    const fires = (signal: Signal, text: string) => signal.fires(signalContext([text], 'research'));
+    expect([fires(hedge, 'It probably holds.'), fires(hedgeRomance, 'It probably holds.')]).toEqual([true, false]);
+    expect([fires(hedge, 'Es gilt vermutlich.'), fires(hedgeRomance, 'Es gilt vermutlich.')]).toEqual([true, false]);
+    expect([fires(hedge, 'Vale probablemente.'), fires(hedgeRomance, 'Vale probablemente.')]).toEqual([false, true]);
+  });
+
+  it('ignores a hedge inside quotation marks, where a verbatim quote has to keep it', () => {
+    expect(notices('The maintainer reported: "There seems to be a problem with the front matter."')).toEqual([]);
+    expect(notices('Er schrieb „das scheint kaputt“ und «il semble cassé» und “it probably fails”.')).toEqual([]);
+    expect(notices('He wrote "it fails" and it probably does.')[0]).toContain('(probably)');
+  });
+
+  it('matches whole words only, and leaves out the Italian false friend possibilmente', () => {
+    expect(notices('Die Wahrscheinlichkeit wurde gemessen: 3 von 3.')).toEqual([]);
+    expect(notices('Rispondere possibilmente entro domani.')).toEqual([]);
+    expect(notices('A likelyhood-free parser; improbably named.')).toEqual([]);
   });
 
   it('notices paragraphs added anywhere to an old text, not a rewrite or an added link', () => {
@@ -57,9 +88,9 @@ describe('assess', () => {
     expect(a).toEqual({ score: 8, hard: [], flagged: true });
   });
 
-  it('flags a scratch path or a hedge on its own, whatever the score', () => {
+  it('flags a scratch path on its own, while a hedge adds one point', () => {
     expect(assess(signalContext(['Kept in E:/tmp/probe.js. From the docs.'], 'research'))).toEqual({ score: 0, hard: ['scratch'], flagged: true });
-    expect(assess(signalContext(['It probably retries. From the docs.'], 'research'))).toEqual({ score: 0, hard: ['hedge'], flagged: true });
+    expect(assess(signalContext(['It probably retries. From the docs.'], 'research'))).toEqual({ score: 1, hard: [], flagged: false });
   });
 
   it('counts a configured owner name like "the maintainer"', () => {

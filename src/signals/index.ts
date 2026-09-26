@@ -11,6 +11,7 @@ import { dates } from './dates.js';
 import { growth } from './growth.js';
 import { handoffs } from './handoffs.js';
 import { hedge } from './hedge.js';
+import { hedgeRomance } from './hedge-romance.js';
 import { maxim } from './maxim.js';
 import { owner } from './owner.js';
 import { scratch } from './scratch.js';
@@ -19,7 +20,7 @@ import { workSession } from './work-session.js';
 
 export type { Assessment, Signal, SignalContext } from './types.js';
 
-export const SIGNALS: readonly Signal[] = [scratch, hedge, append, growth, handoffs, dates, branch, story, owner, maxim, workSession];
+export const SIGNALS: readonly Signal[] = [scratch, hedge, hedgeRomance, append, growth, handoffs, dates, branch, story, owner, maxim, workSession];
 
 // A risk score at or above this flags an entry for a re-check.
 export const FLAG_SCORE = 3;

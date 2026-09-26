@@ -155,22 +155,24 @@ describe('memory_health: the re-check queue', () => {
     const { memoryGet } = await import('./get.js');
     const { learnArchive } = await import('./learn.js');
     await store('The X operator returns Y. From editions/tw5.com/tiddlers/x.tid, read 2026-08-17.');
-    const hedged = await store('The Y operator probably returns Z. From the docs.');
+    await store('The V operator probably returns U. From the docs.');
+    // hedge, owner, handoffs and work-session: score 4.
+    const risky = await store('The Y operator probably returns Z; the maintainer reported it (HANDOFF_A_x_2026-07-01.md, HANDOFF_B_y_2026-07-02.md).', { category: 'insight' });
     const scratch = await store('The Z operator returns W. Probe at E:/tmp/z.js.');
-    const rechecked = await store('The W operator likely returns V.');
+    const rechecked = await store('The W operator returns V. Probe at E:/tmp/w.js.');
     await update({ learningId: rechecked, rechecked: true });
-    learnArchive({ learningId: await store('Archived, probably wrong.') });
-    for (let i = 0; i < 3; i++) memoryGet({ ids: [hedged] });
+    learnArchive({ learningId: await store('Archived. Probe at E:/tmp/a.js.') });
+    for (let i = 0; i < 3; i++) memoryGet({ ids: [risky] });
     memoryGet({ ids: [scratch] });
 
     const r = health();
     if (!r.success) throw new Error(r.error);
     const recheck = (r.data as { recheck: { pending: number; flagged: number; next: Array<[string, number, number, string?]> } }).recheck;
-    expect(recheck.pending).toBe(3);
+    expect(recheck.pending).toBe(4);
     expect(recheck.flagged).toBe(2);
-    expect(recheck.next.map((e) => [e[0], e[2], e[3]])).toEqual([
-      [hedged.slice(0, 8), 3, 'hedge'],
-      [scratch.slice(0, 8), 1, 'scratch'],
+    expect(recheck.next).toEqual([
+      [risky.slice(0, 8), 4, 3],
+      [scratch.slice(0, 8), 0, 1, 'scratch'],
     ]);
   });
 });
