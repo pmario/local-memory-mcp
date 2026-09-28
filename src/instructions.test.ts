@@ -122,6 +122,24 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
     }
   });
 
+  it('the writing topic makes factual a test of every sentence\'s evidence (local-memory-mcp-f7k)', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    for (const text of [
+      'Every sentence MUST carry its evidence',
+      "the maintainer's words verbatim",
+      'rewritten as a deduction that names its facts',
+      'A causal word',
+      'a fix that was not run',
+      'an inferred claim is kept too',
+      'every sentence names its evidence', // in the checklist
+    ]) {
+      expect(content).toContain(text);
+    }
+  });
+
   it('the writing topic names a version and platform only when the source records them', async () => {
     const { guide } = await import('./tools/insights.js');
     const result = guide({ topic: 'writing' });
