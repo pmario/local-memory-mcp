@@ -107,8 +107,22 @@ export function getDb(): Database.Database {
   if (!learningColumns.some((c) => c.name === 'read_count')) {
     db.exec('ALTER TABLE learnings ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0');
   }
+  const decisionColumns = db.prepare('PRAGMA table_info(decisions)').all() as Array<{ name: string }>;
+  if (!decisionColumns.some((c) => c.name === 'archived')) {
+    db.exec('ALTER TABLE decisions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!decisionColumns.some((c) => c.name === 'archived_at')) {
+    db.exec('ALTER TABLE decisions ADD COLUMN archived_at TEXT');
+  }
+  if (!decisionColumns.some((c) => c.name === 'lifecycle_state')) {
+    db.exec("ALTER TABLE decisions ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'active'");
+  }
+  if (!decisionColumns.some((c) => c.name === 'superseded_by_json')) {
+    db.exec("ALTER TABLE decisions ADD COLUMN superseded_by_json TEXT NOT NULL DEFAULT '[]'");
+  }
   // Here rather than in schema.sql, which runs before an older table has the column.
   db.exec('CREATE INDEX IF NOT EXISTS idx_learnings_split_from ON learnings(split_from)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_decisions_archived ON decisions(archived)');
 
   // v2.0.0+: best-effort sqlite-vec hookup. Both calls return false silently
   // on unsupported platforms — no exception bubbles up to break stdio.

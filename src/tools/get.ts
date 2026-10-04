@@ -1,6 +1,6 @@
 /**
  * memory_get: full text of learnings, decisions and sessions by the ids other tools list as headlines.
- * An open counts as a use, like an edit does; archived learnings resolve too, so an id from an old handoff still opens.
+ * An open counts as a use, like an edit does; archived learnings and decisions resolve too, so an id from an old handoff still opens.
  * An id of 8 to 35 hex characters opens by prefix when exactly one entry starts with it, and lands in ambiguous when several do.
  */
 import { z } from 'zod';
@@ -68,6 +68,9 @@ interface DecisionRow {
   project: string | null;
   tags_json: string;
   confidence: number;
+  archived: number;
+  lifecycle_state: string;
+  superseded_by_json: string;
 }
 
 // Handoffs quote the first 8 characters of a UUID; a shorter string could open an arbitrary entry.
@@ -114,7 +117,8 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
     .all(...ids) as LearningRow[];
   const decisions = db
     .prepare(
-      `SELECT id, date, title, decision, alternatives, reasoning, project, tags_json, confidence
+      `SELECT id, date, title, decision, alternatives, reasoning, project, tags_json, confidence,
+              archived, lifecycle_state, superseded_by_json
        FROM decisions WHERE id IN (${placeholders})`
     )
     .all(...ids) as DecisionRow[];
@@ -180,8 +184,15 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
       ...(history ? { history } : {}),
     });
   }
-  for (const { tags_json, ...row } of decisions) {
-    found.set(row.id, { type: 'decision', ...row, tags: JSON.parse(tags_json) });
+  for (const { tags_json, archived, superseded_by_json, ...row } of decisions) {
+    const supersededBy = JSON.parse(superseded_by_json) as string[];
+    found.set(row.id, {
+      type: 'decision',
+      ...row,
+      tags: JSON.parse(tags_json),
+      archived: archived === 1,
+      ...(supersededBy.length > 0 ? { supersededBy } : {}),
+    });
   }
   for (const { tasks_json, ...row } of sessions) {
     found.set(row.id, { type: 'session', ...row, tasks: tasks_json ? JSON.parse(tasks_json) : [] });

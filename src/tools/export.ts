@@ -115,8 +115,9 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
     db
       .prepare(
         `SELECT id, date, title, decision, alternatives, reasoning, project,
-                tags_json, confidence, source, verified, verified_at
-         FROM decisions ORDER BY date`
+                tags_json, confidence, source, verified, verified_at,
+                archived, archived_at, lifecycle_state, superseded_by_json
+         FROM decisions ${archivedFilter} ORDER BY date`
       )
       .all() as Array<Record<string, unknown>>
   ).map((r) => ({
@@ -132,6 +133,10 @@ export function memoryExport(input: z.infer<typeof memoryExportSchema>): ToolRes
     source: r.source,
     verified: r.verified,
     verifiedAt: r.verified_at,
+    archived: r.archived,
+    archivedAt: r.archived_at,
+    lifecycleState: r.lifecycle_state,
+    supersededBy: safeJsonArray(r.superseded_by_json),
   }));
 
   const entities = (
@@ -447,6 +452,10 @@ const importDecisionSchema = z.object({
   source: zSource,
   verified: zFlag,
   verifiedAt: zIsoish,
+  archived: zFlag,
+  archivedAt: zIsoish,
+  lifecycleState: zLifecycleState,
+  supersededBy: z.array(zId).max(20).nullish(),
 });
 
 /**
@@ -854,8 +863,8 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
     const dIns = db.prepare(
       `INSERT OR IGNORE INTO decisions
        (id, date, title, decision, alternatives, reasoning, project, tags_json,
-        confidence, source, verified, verified_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        confidence, source, verified, verified_at, archived, archived_at, lifecycle_state, superseded_by_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const d of validDecisions) {
       // reasoning is NOT NULL in the schema — a decision without it is malformed
@@ -873,7 +882,11 @@ export async function memoryImport(input: z.infer<typeof memoryImportSchema>): P
         d.confidence ?? 0.7,
         d.source || null,
         flagToInt(d.verified),
-        d.verifiedAt || null
+        d.verifiedAt || null,
+        flagToInt(d.archived),
+        d.archivedAt || null,
+        d.lifecycleState || 'active',
+        JSON.stringify(d.supersededBy ?? [])
       );
       if (info.changes > 0) {
         counts.decisions++;

@@ -21,7 +21,7 @@ import {
 } from './learn.js';
 import { search, searchSchema } from './search.js';
 import { memoryGet, getSchema } from './get.js';
-import { decide, decideSchema } from './decide.js';
+import { decide, decideSchema, decisionArchive, decisionArchiveSchema } from './decide.js';
 import {
   entityCreateEmbedded, entityCreateSchema,
   entityObserve, entityObserveSchema,
@@ -111,7 +111,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_get',
-    description: 'Full text of learnings, decisions and sessions by id (1-20 ids), e.g. the ids memory_session_start lists — a session id opens the whole summary a brief start truncates. An 8+ character id prefix opens its entry when unique, else comes back in ambiguous with the candidate ids. Archived learnings included; unknown ids come back in missing. asOf returns a learning as the store held it then; history: true lists its earlier versions with dates and headlines.',
+    description: 'Full text of learnings, decisions and sessions by id (1-20 ids), e.g. the ids memory_session_start lists — a session id opens the whole summary a brief start truncates. An 8+ character id prefix opens its entry when unique, else comes back in ambiguous with the candidate ids. Archived learnings and decisions included; unknown ids come back in missing. asOf returns a learning as the store held it then; history: true lists its earlier versions with dates and headlines.',
     schema: getSchema,
     handler: (input) => memoryGet(input as z.infer<typeof getSchema>),
   },
@@ -120,6 +120,12 @@ export const TOOLS: ToolDef[] = [
     description: 'Record a decision with reasoning and alternatives.',
     schema: decideSchema,
     handler: (input) => decide(input as z.infer<typeof decideSchema>),
+  },
+  {
+    name: 'memory_decision_archive',
+    description: 'Retire a decision that a later one replaces or that turned out wrong. reason is required; supersededBy lists the full ids of the entries that replace it. Row stays: memory_get still opens it, marked archived; it never resurfaces in search or reflect.',
+    schema: decisionArchiveSchema,
+    handler: (input) => decisionArchive(input as z.infer<typeof decisionArchiveSchema>),
   },
   {
     name: 'memory_entity_create',
@@ -342,6 +348,7 @@ const ANNOTATIONS: Record<string, ToolAnnotations> = {
   memory_search: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   memory_get: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   memory_decide: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  memory_decision_archive: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   // NOT idempotent: a repeat call with a different summary UPDATEs the entity
   // (entity.ts entityCreate), so the second call can change state. (R2 FINDING-A.)
   memory_entity_create: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

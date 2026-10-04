@@ -233,6 +233,7 @@ export function reflect(input: z.infer<typeof reflectSchema>): ToolResult {
     ? `SELECT id, title, date, project
        FROM decisions
        WHERE verified = 0
+         AND archived = 0
          AND datetime(date) < datetime(?)
          AND datetime(date) > datetime(?)
          AND project = ?
@@ -241,6 +242,7 @@ export function reflect(input: z.infer<typeof reflectSchema>): ToolResult {
     : `SELECT id, title, date, project
        FROM decisions
        WHERE verified = 0
+         AND archived = 0
          AND datetime(date) < datetime(?)
          AND datetime(date) > datetime(?)
        ORDER BY datetime(date) DESC

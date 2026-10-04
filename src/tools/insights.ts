@@ -28,7 +28,7 @@ export function insights(input: z.infer<typeof insightsSchema>): ToolResult {
 
   const totalSessions = (db.prepare(`SELECT COUNT(*) as c FROM sessions ${projectFilter}`).get(...projectArgs) as { c: number }).c;
   const totalLearnings = (db.prepare(`SELECT COUNT(*) as c FROM learnings WHERE archived = 0 ${projectFilter ? 'AND project = ?' : ''}`).get(...projectArgs) as { c: number }).c;
-  const totalDecisions = (db.prepare(`SELECT COUNT(*) as c FROM decisions ${projectFilter}`).get(...projectArgs) as { c: number }).c;
+  const totalDecisions = (db.prepare(`SELECT COUNT(*) as c FROM decisions WHERE archived = 0 ${projectFilter ? 'AND project = ?' : ''}`).get(...projectArgs) as { c: number }).c;
   const totalEntities = (db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c: number }).c;
 
   const categoryBreakdown = db
@@ -313,7 +313,7 @@ A write answers with a \`notice\` when the text cites a scratch path, hedges out
 
 Splitting follows an order that keeps every subject in the store: the writer MUST store the split-off parts first, each with \`splitFrom\` set to the original's full id and a [[id8]] link to it, then rewrite the original to keep the subject a search most likely lands on, so that the original links every part. The server refuses a part that does not link its hub and a hub write that misses an active part, and a split has one level. The original MUST NOT be rewritten before its parts exist.
 
-A superseded entry MUST be archived with \`memory_learn_archive\`, with a reason that names its successor, and MUST NOT stay active with a "SUPERSEDED" first line. A handoff pointer names the handoff file, its chain and sequence, the status and the next step; there SHOULD be one per chain, the previous pointer SHOULD be archived when the next is written, and the session's lessons MUST be stored as their own entries.
+A superseded entry MUST be archived, a learning with \`memory_learn_archive\` and a reason that names its successor, a decision with \`memory_decision_archive\` and its successors in \`supersededBy\`, and MUST NOT stay active with a "SUPERSEDED" first line. A handoff pointer names the handoff file, its chain and sequence, the status and the next step; there SHOULD be one per chain, the previous pointer SHOULD be archived when the next is written, and the session's lessons MUST be stored as their own entries.
 
 A learning MUST NOT hold a secret: no passphrase, key, token or credential, not even a test one; it names the file or script that holds or mints it instead.
 
@@ -325,6 +325,7 @@ The style label is the writer's promise. The server never adds it and checks onl
 - \`memory_contradictions()\` — LLM-free scan for observation pairs with high cosine similarity but disagreeing negation or confidence. Needs sqlite-vec.
 - \`memory_observation_supersede({observationId, supersededById?})\` — retire a stale fact by setting valid_to; it stays for asOf queries. With supersededById, the newer fact's valid_from is the cutoff.
 - \`memory_learn_archive({learningId, reason?})\` — soft-delete a learning: it never resurfaces in search, \`memory_get\` still opens it.
+- \`memory_decision_archive({decisionId, reason, supersededBy?})\` — retire a replaced or wrong decision: it never resurfaces in search or reflect, \`memory_get\` still opens it with its successors.
 - \`memory_get({ids, asOf?, history?})\` — every update or archive keeps the replaced version of a learning; asOf reads it as the store held it then, history: true lists its versions.
 - \`memory_learn_update({learningId, content?, confidence?, tags?, project?, category?, style?, splitFrom?, memoryType?})\` — edit a live learning; project null unscopes it, splitFrom null takes it out of a split; re-embeds when the content changes, and a rewrite declares its style (see topic writing).
 - \`memory_reflect({lookbackDays?: 7})\` — most-used and stale learnings, hot entities, open decisions, as data plus a markdown summary. No LLM call.`,

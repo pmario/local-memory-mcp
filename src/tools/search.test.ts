@@ -165,7 +165,7 @@ describe('unified search', () => {
   });
 
   it('archive filter does not affect decision / entity / observation hits', async () => {
-    // Decisions have no `archived` column, so they must never be filtered out.
+    // The learnings archive filter must not drop a live decision.
     const { decide } = await import('./decide.js');
     const { search } = await import('./search.js');
     await decide({ title: 'koala habitat', decision: 'preserve', reasoning: 'trees' });

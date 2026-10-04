@@ -84,10 +84,11 @@ Options:
                           content; a changed content carries the tree's style);
                           entity summary (memory_entity_create);
                           learning archive state, confirmation and
-                          re-check mark, observation validTo, session end
+                          re-check mark, decision archive state,
+                          observation validTo, session end
                           (written as the tree has them).
                         Lifecycle, style and splitFrom only move forward: an
-                        archived learning, superseded observation or ended
+                        archived learning or decision, superseded observation or ended
                         session is never reopened, and no style value or
                         splitFrom is removed except by a content rewrite.
                         Anything else that differs (source, date, entity name
@@ -426,7 +427,9 @@ for (const path of listMd('learnings-history')) {
 }
 
 const decisions = [];
-for (const path of listMd('decisions')) {
+// Files without archive fields, which --update must not read as a claim that the decision is live.
+const decisionsWithoutArchive = new Set();
+for (const path of [...listMd('decisions'), ...listMd('decisions-archived')]) {
 	const p = parseFile(path);
 	if (!p.ok) { skip(path, p.reason, p.data); continue; }
 	const { fields: f, body } = p;
@@ -434,8 +437,10 @@ for (const path of listMd('decisions')) {
 		/^# (.*)\n\n## Decision\n\n([\s\S]*?)\n\n## Reasoning\n\n([\s\S]*?)(?:\n\n## Alternatives considered\n\n([\s\S]*))?$/
 	);
 	if (!m) { skip(path, 'body does not match the decision layout (see --help)', body); continue; }
+	const did = ensureId(path, f);
+	if (f.archived === undefined) decisionsWithoutArchive.add(did);
 	decisions.push({
-		id: ensureId(path, f),
+		id: did,
 		date: f.date ?? null,
 		title: m[1],
 		decision: unescapeContent(m[2]),
@@ -447,6 +452,10 @@ for (const path of listMd('decisions')) {
 		source: f.source ?? null,
 		verified: f.verified ?? 0,
 		verifiedAt: f.verifiedAt ?? null,
+		archived: f.archived ?? 0,
+		archivedAt: f.archivedAt ?? null,
+		lifecycleState: f.lifecycleState ?? 'active',
+		supersededBy: f.supersededBy ?? [],
 	});
 }
 
@@ -639,6 +648,7 @@ if (doUpdate && existsSync(targetDb)) {
 	const Database = require('better-sqlite3');
 	const udb = new Database(targetDb, { readonly: true });
 	const rows = new Map(udb.prepare('SELECT * FROM learnings').all().map((r) => [r.id, r]));
+	const decisionRows = new Map(udb.prepare('SELECT id, archived, archived_at, lifecycle_state, superseded_by_json FROM decisions').all().map((r) => [r.id, r]));
 	const entityRows = new Map(udb.prepare('SELECT id, name, entity_type, summary FROM entities').all().map((r) => [r.id, r]));
 	const obsRows = new Map(udb.prepare('SELECT id, valid_to FROM entity_observations').all().map((r) => [r.id, r]));
 	const sessionRows = new Map(udb.prepare('SELECT id, ended_at, summary, tasks_json FROM sessions').all().map((r) => [r.id, r]));
@@ -702,6 +712,20 @@ if (doUpdate && existsSync(targetDb)) {
 		]) {
 			if (tree !== db) updateWarnings.push(`${l.id}: ${field} differs (tree ${JSON.stringify(tree)}, store ${JSON.stringify(db)}); memory_learn_update cannot change it, archive-and-rewrite instead`);
 		}
+	}
+	for (const d of envelope.decisions) {
+		const r = decisionRows.get(d.id);
+		if (!r || decisionsWithoutArchive.has(d.id)) continue;
+		const archived = d.archived === true || d.archived === 1 ? 1 : 0;
+		const archivedAt = orNull(d.archivedAt);
+		const lifecycle = String(d.lifecycleState ?? 'active');
+		const successors = JSON.stringify(d.supersededBy ?? []);
+		if (archived === r.archived && archivedAt === r.archived_at && lifecycle === r.lifecycle_state && successors === r.superseded_by_json) continue;
+		const validSuccessors = Array.isArray(d.supersededBy ?? []) && (d.supersededBy ?? []).length <= 20 && (d.supersededBy ?? []).every((s) => typeof s === 'string' && s.length <= 200);
+		if (r.archived === 1 && archived === 0) updateWarnings.push(`decision ${d.id}: archived in the store but not in the tree; nothing reopens an archived decision`);
+		else if (archived === 0) continue;
+		else if (!LIFECYCLE.test(lifecycle) || !isoish(archivedAt) || !validSuccessors) updateWarnings.push(`decision ${d.id}: archive state ${JSON.stringify(lifecycle.slice(0, 40))} at ${JSON.stringify(archivedAt)} is not one the server writes`);
+		else sqlUpdates.push({ what: `decision ${d.id}: ${lifecycle.slice(0, 40)}`, sql: 'UPDATE decisions SET archived = ?, archived_at = ?, lifecycle_state = ?, superseded_by_json = ? WHERE id = ?', args: [archived, archivedAt, lifecycle, successors, d.id] });
 	}
 	const idByNameType = new Map([...entityRows.values()].map((r) => [`${r.name}\0${r.entity_type}`, r.id]));
 	for (const e of envelope.entities) {
@@ -868,6 +892,10 @@ function runVerify() {
 		compare('decision', d.id, 'alternatives', d.alternatives, r.alternatives);
 		compare('decision', d.id, 'project', d.project, r.project);
 		compare('decision', d.id, 'tags', d.tags, JSON.parse(r.tags_json));
+		compare('decision', d.id, 'archived', d.archived, r.archived);
+		compare('decision', d.id, 'archivedAt', d.archivedAt, r.archived_at);
+		compare('decision', d.id, 'lifecycleState', d.lifecycleState, r.lifecycle_state);
+		compare('decision', d.id, 'supersededBy', d.supersededBy, JSON.parse(r.superseded_by_json));
 	}
 	const dbSessions = new Map(vdb.prepare('SELECT * FROM sessions').all().map((r) => [r.id, r]));
 	for (const s of envelope.sessions) {

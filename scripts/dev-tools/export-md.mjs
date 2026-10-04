@@ -89,6 +89,7 @@ Output tree:
   learnings-history/   one file per earlier version of a learning, same format
                        plus learningId, recordedAt and expiredAt
   decisions/          title/decision/reasoning/alternatives as sections
+  decisions-archived/  archived decisions, same format plus the archive fields
   sessions/            one file per session, summary + open tasks
   entities/            one file per entity; every observation is a
                        "## Observation <id>" section with its metadata lines
@@ -118,7 +119,7 @@ const db = new Database(dbPath, { readonly: true });
 // column already fails loudly in the SELECT.)
 const EXPECTED_COLUMNS = {
 	learnings: ['id', 'date', 'category', 'content', 'project', 'tags_json', 'usage_count', 'last_used', 'confidence', 'source', 'verified', 'verified_at', 'archived', 'archived_at', 'importance', 'lifecycle_state', 'memory_type', 'style_json', 'split_from', 'rechecked_at', 'read_count'],
-	decisions: ['id', 'date', 'title', 'decision', 'alternatives', 'reasoning', 'project', 'tags_json', 'confidence', 'source', 'verified', 'verified_at'],
+	decisions: ['id', 'date', 'title', 'decision', 'alternatives', 'reasoning', 'project', 'tags_json', 'confidence', 'source', 'verified', 'verified_at', 'archived', 'archived_at', 'lifecycle_state', 'superseded_by_json'],
 	entities: ['id', 'name', 'entity_type', 'created_at', 'updated_at', 'summary', 'confidence'],
 	entity_observations: ['id', 'entity_id', 'content', 'source', 'session_id', 'valid_from', 'valid_to', 'confidence', 'created_at'],
 	entity_relations: ['id', 'from_entity_id', 'to_entity_id', 'relation_type', 'weight', 'created_at'],
@@ -278,7 +279,7 @@ const write = (relPath, text, what) => {
 	return relPath.replace(/\\/g, '/');
 };
 
-const index = { learnings: [], 'archived learnings': [], decisions: [], entities: [], sessions: [] };
+const index = { learnings: [], 'archived learnings': [], decisions: [], 'archived decisions': [], entities: [], sessions: [] };
 const wrote = { learnings: 0, versions: 0, decisions: 0, entities: 0, sessions: 0 };
 const skippedEntityIds = new Set();
 
@@ -358,7 +359,7 @@ for (const v of versions) {
 
 const decisions = db.prepare(
 	`SELECT id, date, title, decision, alternatives, reasoning, project, tags_json,
-	        confidence, source, verified, verified_at
+	        confidence, source, verified, verified_at, archived, archived_at, lifecycle_state, superseded_by_json
 	 FROM decisions ORDER BY date, id`
 ).all();
 for (const d of decisions) {
@@ -374,7 +375,7 @@ for (const d of decisions) {
 	let body = `# ${d.title}\n\n## Decision\n\n${escapeContent(d.decision)}\n\n## Reasoning\n\n${escapeContent(d.reasoning)}`;
 	if (d.alternatives) body += `\n\n## Alternatives considered\n\n${escapeContent(d.alternatives)}`;
 	const rel = write(
-		join('decisions', `${part(day)}_${slug(d.title)}_${part(d.id.slice(0, 8))}.md`),
+		join(d.archived ? 'decisions-archived' : 'decisions', `${part(day)}_${slug(d.title)}_${part(d.id.slice(0, 8))}.md`),
 		fm({
 			id: d.id,
 			date: d.date,
@@ -384,12 +385,17 @@ for (const d of decisions) {
 			source: d.source,
 			verified: d.verified,
 			verifiedAt: d.verified_at,
+			// Only an archived decision carries these, so the archive tool did not rewrite every live decision file.
+			archived: d.archived ? d.archived : undefined,
+			archivedAt: d.archived_at,
+			lifecycleState: d.archived ? d.lifecycle_state : undefined,
+			supersededBy: d.archived && JSON.parse(d.superseded_by_json).length ? JSON.parse(d.superseded_by_json) : undefined,
 		}) + body + '\n',
 		dWhat
 	);
 	if (!rel) continue;
 	wrote.decisions++;
-	index.decisions.push(`- [${day} · ${d.title}](${rel})`);
+	index[d.archived ? 'archived decisions' : 'decisions'].push(`- [${day} · ${d.title}](${rel})`);
 }
 
 // Entities are lossless since the round-trip upgrade: every observation is a

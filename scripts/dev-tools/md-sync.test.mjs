@@ -276,3 +276,67 @@ describe('learning history through the tree (local-memory-mcp-mnb)', () => {
 		expect(ver.stdout).toContain('VERIFY: perfect round-trip, 0 mismatches.');
 	});
 });
+
+describe('decision archive state through the tree (wikilabs-kfw)', () => {
+	it('carries an archived decision to the other machine, and an older tree never reopens it', async () => {
+		// Both machines hold two live decisions; then machine A archives the first.
+		const machineA = join(tmp, 'decision-a.sqlite');
+		cpSync(store, machineA);
+		process.env.MEMORY_DB_PATH = machineA;
+		const client = await import('../../src/db/client.ts');
+		const { decide, decisionArchive } = await import('../../src/tools/decide.ts');
+		let oldId, newId, onA;
+		try {
+			oldId = (await decide({ title: 'Old rule', decision: 'a', reasoning: 'r' })).data.id;
+			newId = (await decide({ title: 'New rule', decision: 'b', reasoning: 'r' })).data.id;
+			client.closeDb();
+			expect(run(EXPORT, ['--sync', '-e', join(tmp, 'decision-base'), '--db', machineA]).status).toBe(0);
+			cpSync(machineA, join(tmp, 'decision-b.sqlite'));
+			client.getDb();
+			expect(decisionArchive({ decisionId: oldId, reason: 'superseded', supersededBy: [newId] }).success).toBe(true);
+			onA = client.getDb().prepare('SELECT archived, archived_at, lifecycle_state, superseded_by_json FROM decisions WHERE id = ?').get(oldId);
+		} finally {
+			client.closeDb();
+			delete process.env.MEMORY_DB_PATH;
+		}
+
+		const treeA = join(tmp, 'decision-tree');
+		expect(run(EXPORT, ['--sync', '-e', treeA, '--db', machineA]).status).toBe(0);
+		const archivedFile = readFileSync(fileEndingIn(treeA, 'decisions-archived', oldId), 'utf8');
+		expect(archivedFile).toMatch(/^archived: 1$/m);
+		expect(archivedFile).toContain(`archivedAt: ${onA.archived_at}\n`);
+		expect(archivedFile).toMatch(/^lifecycleState: archived:superseded$/m);
+		expect(archivedFile).toContain(`supersededBy: ["${newId}"]\n`);
+		// A live decision file stays as it was before the archive fields existed.
+		expect(readFileSync(fileEndingIn(treeA, 'decisions', newId), 'utf8')).not.toMatch(/^(archived|archivedAt|lifecycleState|supersededBy):/m);
+
+		const again = join(tmp, 'decision-tree-again');
+		expect(run(EXPORT, ['--sync', '-e', again, '--db', machineA]).status).toBe(0);
+		expect(listAll(again)).toEqual(listAll(treeA));
+		for (const f of listAll(treeA)) expect(readFileSync(join(again, f), 'utf8'), f).toBe(readFileSync(join(treeA, f), 'utf8'));
+
+		const machineB = join(tmp, 'decision-b.sqlite');
+		const dry = run(IMPORT, [treeA, '--db', machineB, '--update']);
+		expect(dry.stdout).toContain(`    decision ${oldId}: archived:superseded`);
+		expect(run(IMPORT, [treeA, '--db', machineB, '--apply', '--update']).status).toBe(0);
+		const second = run(IMPORT, [treeA, '--db', machineB, '--update']);
+		expect(second.stdout).toContain('--update: 0 archive, validity or session change(s) would be written');
+		// The base tree, exported before the archive, carries no archive fields and must not reopen it.
+		const old = run(IMPORT, [join(tmp, 'decision-base'), '--db', machineB, '--apply', '--update']);
+		expect(old.status, old.stderr + old.stdout).toBe(0);
+		expect(old.stdout).not.toContain('NOT UPDATABLE');
+		// A store that never held the decisions gets the archive state through memory_import.
+		const fresh = join(tmp, 'decision-fresh.sqlite');
+		expect(run(IMPORT, [treeA, '--db', fresh, '--apply']).status).toBe(0);
+		for (const machine of [machineB, fresh]) {
+			process.env.MEMORY_DB_PATH = machine;
+			const row = client.getDb().prepare('SELECT archived, archived_at, lifecycle_state, superseded_by_json FROM decisions WHERE id = ?').get(oldId);
+			client.closeDb();
+			delete process.env.MEMORY_DB_PATH;
+			expect(row, machine).toEqual(onA);
+		}
+
+		const ver = run(IMPORT, [treeA, '--db', machineB, '--verify']);
+		expect(ver.stdout).toContain('VERIFY: perfect round-trip, 0 mismatches.');
+	});
+});

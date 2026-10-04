@@ -52,6 +52,7 @@ describe('memory_guide keeps what INSTRUCTIONS no longer carries', () => {
       'asOf',
       'memory_contradictions',
       'memory_learn_archive',
+      'memory_decision_archive',
       'memory_learn_update',
       'memory_observation_supersede',
       'memory_reflect',
@@ -94,6 +95,7 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
       'source',
       'store the split-off parts first', // splitting order
       'memory_learn_archive', // superseded entries
+      'memory_decision_archive',
       'handoff pointer',
       'date', // when it was measured
       'secret', // never store one

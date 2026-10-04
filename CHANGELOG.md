@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-Lean session start and embeddings that cover whole entries. 26 tools, 269 → **468 tests**.
+Lean session start and embeddings that cover whole entries. 27 tools, 269 → **483 tests**.
+
+### Added — `memory_decision_archive`
+
+A decision cannot be edited, and `memory_learn_archive` refused a decision id, so a replaced decision stayed in search beside its successor. `memory_decision_archive({decisionId, reason, supersededBy?})` retires it: four new decision columns hold `archived`, `archived_at`, `lifecycle_state` (`archived:<reason>`) and the successor ids, which must exist as decisions or learnings. `memory_search`, `memory_reflect` and the `memory_insights` count skip an archived decision; `memory_get` still opens it with `archived: true` and `supersededBy`. Both export formats carry the state: the Markdown tree moves an archived decision to `decisions-archived/` and writes the fields only there, so live decision files do not change, and `import-md --update` applies an archive and never reopens one. `schema_version` stays 2: an old export-md refuses the new columns.
 
 ### Changed — factual is a test of every sentence
 

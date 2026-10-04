@@ -11,7 +11,7 @@
 ![License](https://img.shields.io/github/license/studiomeyer-io/local-memory-mcp?style=flat-square&color=22c55e&label=license)
 ![Last commit](https://img.shields.io/github/last-commit/studiomeyer-io/local-memory-mcp?style=flat-square&color=88c0d0&label=updated)
 ![GitHub stars](https://img.shields.io/github/stars/studiomeyer-io/local-memory-mcp?style=flat-square&color=ffd700&logo=github&label=stars)
-<!-- /badges -->**Persistent local memory for Claude, Cursor & Codex. 26 tools. Hybrid retrieval (BM25 + vector cosine, RRF). Bi-temporal asOf queries + fact supersession. LLM-free contradiction detection + reflection. Portable JSON export/import. Multilingual embeddings. No cloud. No API keys.**
+<!-- /badges -->**Persistent local memory for Claude, Cursor & Codex. 27 tools. Hybrid retrieval (BM25 + vector cosine, RRF). Bi-temporal asOf queries + fact supersession. LLM-free contradiction detection + reflection. Portable JSON export/import. Multilingual embeddings. No cloud. No API keys.**
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/@studiomeyer/local-memory-mcp)](https://www.npmjs.com/package/@studiomeyer/local-memory-mcp)
@@ -230,13 +230,13 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 
 **Sleeptime via hooks.** Letta / Zep / Mem0 run reflection in a background "sleeptime" loop. We run on-demand because we're a stateless stdio daemon — but you get sleeptime semantics for free by wiring a Claude Code SessionStart or SessionEnd hook (or an n8n cron, or a `crontab` entry) that calls `memory_reflect`. The summary lands in the LLM's context at the same time as your `memory_session_start` snapshot. Zero new infrastructure.
 
-## Tools (26)
+## Tools (27)
 
 ### Sessions
 
 **`memory_session_start`** -- Call this first in every conversation. Lists what your AI needs to pick up where you left off, as headlines with ids: the first paragraph of the latest session summary and the 5 newest learnings. With the optional `project` parameter, the session of that project comes first and only its learnings are listed. Pass `detail: "full"` for the last 3 summaries and whole learnings instead.
 
-**`memory_get`** -- Full text of learnings, decisions and sessions by id (1 to 20 ids), such as the ids `memory_session_start` and a brief `memory_search` list. A session id returns the whole summary and its open tasks, which a brief session start cuts to the first paragraph. Archived learnings are returned too, marked `archived: true`; unknown ids come back in `missing`. `asOf` returns each learning as the store held it at that time (a learning that did not exist yet lands in `missing`), and `history: true` adds its earlier versions. Opening an entry counts in its `usage_count` and `last_used`, so `memory_reflect` sees what you actually read.
+**`memory_get`** -- Full text of learnings, decisions and sessions by id (1 to 20 ids), such as the ids `memory_session_start` and a brief `memory_search` list. A session id returns the whole summary and its open tasks, which a brief session start cuts to the first paragraph. Archived learnings and decisions are returned too, marked `archived: true`, an archived decision with its `supersededBy` ids; unknown ids come back in `missing`. `asOf` returns each learning as the store held it at that time (a learning that did not exist yet lands in `missing`), and `history: true` adds its earlier versions. Opening an entry counts in its `usage_count` and `last_used`, so `memory_reflect` sees what you actually read.
 
 **`memory_session_end`** -- Call at the end to save a summary. Pass a `summary` string describing what was accomplished. The next session auto-loads this. Without arguments it closes the active session.
 
@@ -259,6 +259,8 @@ The Markdown is for the LLM to read at session start; the structured fields are 
 ### Decisions
 
 **`memory_decide`** -- Records a decision with structured context. Parameters: `title` (what was decided), `decision` (the choice made), `reasoning` (why), `alternatives` (what else was considered). Optional: `confidence`, `project`, `tags`. This is useful for looking back at past decisions months later and understanding why you chose something.
+
+**`memory_decision_archive`** -- Retire a decision that a later one replaces or that turned out wrong; a decision cannot be edited. Required: `decisionId`, `reason` (stored on `lifecycle_state` as `archived:<reason>`). Optional: `supersededBy`, the full ids of the decisions or learnings that replace it. The row stays, so `memory_get` still opens it with `archived: true` and its successors, but `memory_search`, `memory_reflect` and `memory_insights` skip it. Idempotent — calling twice returns `already_archived`.
 
 ### Knowledge Graph
 

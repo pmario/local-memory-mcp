@@ -226,7 +226,7 @@ function ftsSearch(
   const scope = buildScopeClause(scopeFilter);
 
   // Two visibility gates, mirroring how the live entity views work:
-  //   - archived learnings (archived = 1) never surface.
+  //   - archived learnings and decisions (archived = 1) never surface.
   //   - superseded observations (valid_to IS NOT NULL) never surface in LIVE
   //     search. They stay reachable through entity_open({asOf}) for
   //     point-in-time queries. Added v2.2.0 alongside memory_observation_
@@ -257,6 +257,7 @@ function ftsSearch(
       ON search_fts.content_type = 'entity' AND en.id = search_fts.content_id
     WHERE search_fts MATCH ?
       AND (search_fts.content_type != 'learning' OR COALESCE(l.archived, 0) = 0)
+      AND (search_fts.content_type != 'decision' OR COALESCE(d.archived, 0) = 0)
       AND (search_fts.content_type != 'observation' OR eo.valid_to IS NULL)
       ${typeFilter}
       ${scope.clause}
@@ -371,6 +372,7 @@ function vectorSearch(
       ON sfts.content_type = 'entity' AND en.id = vr.content_id
     WHERE sfts.content_id IS NOT NULL
       AND (sfts.content_type != 'learning' OR COALESCE(l.archived, 0) = 0)
+      AND (sfts.content_type != 'decision' OR COALESCE(d.archived, 0) = 0)
       AND (sfts.content_type != 'observation' OR eo.valid_to IS NULL)
       ${typeFilter}
       ${scopeClause}

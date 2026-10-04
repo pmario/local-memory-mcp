@@ -62,3 +62,55 @@ export async function decide(input: z.infer<typeof decideSchema>): Promise<ToolR
     message: `Decision "${input.title}" saved.`,
   };
 }
+
+// A decision cannot be edited, so a replaced one is retired like an archived learning (wikilabs-kfw).
+export const decisionArchiveSchema = z.object({
+  decisionId: z.string().min(1),
+  reason: z.string().min(1).max(500),
+  supersededBy: z.array(z.string().min(1)).min(1).max(20).optional(),
+});
+
+export function decisionArchive(input: z.infer<typeof decisionArchiveSchema>): ToolResult {
+  const db = getDb();
+  const existing = db
+    .prepare('SELECT id, archived FROM decisions WHERE id = ?')
+    .get(input.decisionId) as { id: string; archived: number } | undefined;
+
+  if (!existing) {
+    return { success: false, error: 'Decision not found.', code: 'NOT_FOUND' };
+  }
+  if (existing.archived === 1) {
+    return {
+      success: true,
+      data: { id: input.decisionId, action: 'already_archived' },
+      message: 'Decision was already archived.',
+    };
+  }
+
+  const successors = [...new Set(input.supersededBy ?? [])];
+  if (successors.includes(input.decisionId)) {
+    return { success: false, error: 'A decision cannot supersede itself.', code: 'SELF_SUPERSEDE' };
+  }
+  // A successor may itself be archived later, so only its existence is checked.
+  const exists = db.prepare('SELECT 1 FROM decisions WHERE id = @id UNION SELECT 1 FROM learnings WHERE id = @id');
+  const unknown = successors.filter((id) => !exists.get({ id }));
+  if (unknown.length > 0) {
+    return { success: false, error: `Successor not found: ${unknown.join(', ')}. Pass full decision or learning ids.`, code: 'SUPERSEDER_NOT_FOUND' };
+  }
+
+  const lifecycle = `archived:${input.reason}`;
+  db.prepare(
+    `UPDATE decisions
+       SET archived = 1,
+           archived_at = ?,
+           lifecycle_state = ?,
+           superseded_by_json = ?
+     WHERE id = ?`
+  ).run(nowIso(), lifecycle, JSON.stringify(successors), input.decisionId);
+
+  return {
+    success: true,
+    data: { id: input.decisionId, action: 'archived', lifecycleState: lifecycle, supersededBy: successors },
+    message: `Decision archived: ${input.reason}.`,
+  };
+}

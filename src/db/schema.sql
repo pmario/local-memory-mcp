@@ -37,7 +37,11 @@ CREATE TABLE IF NOT EXISTS decisions (
   confidence    REAL NOT NULL DEFAULT 0.7,
   source        TEXT,
   verified      INTEGER NOT NULL DEFAULT 0,
-  verified_at   TEXT
+  verified_at   TEXT,
+  archived INTEGER NOT NULL DEFAULT 0, -- memory_decision_archive; stores from before it get these columns in client.ts
+  archived_at TEXT,
+  lifecycle_state TEXT NOT NULL DEFAULT 'active', -- 'archived:<reason>' once archived, as for learnings
+  superseded_by_json TEXT NOT NULL DEFAULT '[]' -- ids of the entries that replace it
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project);
 CREATE INDEX IF NOT EXISTS idx_decisions_date ON decisions(date DESC);
