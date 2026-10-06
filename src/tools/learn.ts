@@ -287,7 +287,7 @@ export const learnUpdateSchema = z.object({
   verified: z
     .boolean()
     .describe(
-      'true only when the work at hand already re-confirmed every fact the entry states (it re-ran the measurement, test or probe, or re-read the cited source); never start a check just to set it. Sets verifiedAt to now, with or without a content change. A content change without it only marks the text as changed since its last confirmation.'
+      "true only when the work at hand already re-confirmed every fact the entry states (it re-ran the measurement, test or probe, or re-read the cited source); never start a check just to set it. Sets verifiedAt to now, with or without a content change. A content change without it, a typo fix included, marks the text as changed since its last confirmation and keeps verifiedAt, which the server first sets to the learning's date when it is empty; a metadata change, a style-only update and splitFrom leave both alone."
     )
     .optional(),
   rechecked: z

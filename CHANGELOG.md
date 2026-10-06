@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-Lean session start and embeddings that cover whole entries. 27 tools, 269 → **483 tests**.
+Lean session start and embeddings that cover whole entries. 27 tools, 269 → **486 tests**.
+
+### Changed — one first-line rule: the finding as measured, with its count
+
+The writing guide had two first-line rules that pulled apart: state only what was measured or read, and state the current rule. It now has one: the first line states the finding as measured or read, with its count when it is a rule ("in 1 call", "3 of 3 runs"); a fix that was not run says so there. General knowledge, such as what a setting is for, is cut as no finding. The `verified`, `verifiedAt` and `rechecked` mechanics leave the topic for the write tools' field descriptions, which already held most of them: `memory_learn_update`'s `verified` now also states that a typo fix counts as a content change, that `verifiedAt` is kept (set first to the learning's date when empty), and that a metadata change, a style-only update and `splitFrom` leave both alone; `memory_health` names what flags a learning for the re-check queue. The checklist points to the rules instead of restating them, the classifier's trigger words and the hedge list shrink to examples (a notice names each hedge it found), and the atomic rule's evidence leaves the topic: in one measured store, split rewrites ranked first for 12 of 13 symptom queries in hybrid search, the long originals for 8, and a rewrite that kept six subjects for 9. With tighter wording, every rule kept, the topic goes from 9,108 to 6,868 characters.
 
 ### Added — `memory_decision_archive`
 

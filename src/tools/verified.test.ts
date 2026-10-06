@@ -167,13 +167,29 @@ describe('the rule reaches the writer', () => {
     expect(learn.description).toContain("hub's");
   });
 
-  it('the writing guide states when verified_at moves', async () => {
+  it('the write tools state when verifiedAt moves, and the writing guide points to them', async () => {
+    const { toMcpToolList } = await import('./registry.js');
+    const tools = toMcpToolList();
+    type Props = { properties: Record<string, { description?: string }> };
+    const verified = (tools.find((t) => t.name === 'memory_learn_update')!.inputSchema as Props).properties.verified.description!;
+    const verifiedAt = (tools.find((t) => t.name === 'memory_learn')!.inputSchema as Props).properties.verifiedAt.description!;
+    for (const text of ['every fact', 'never start', 'a typo fix included', 'keeps verifiedAt', "the learning's date when it is empty", 'leave both alone']) {
+      expect(verified).toContain(text);
+    }
+    for (const text of ['last confirmed', 'first confirmation']) expect(verifiedAt).toContain(text);
     const { guide } = await import('./insights.js');
     const r = guide({ topic: 'writing' });
     if (!r.success) throw new Error(r.error);
     const content = (r.data as { content: string }).content;
-    for (const text of ['verified_at', 'last confirmed', 'every fact', 'sets `verified` to 0', 'a typo fix included', 'MUST NOT start']) {
-      expect(content).toContain(text);
+    expect(content).toContain('`verified`, `verifiedAt` and `rechecked` fields');
+    for (const text of ['sets `verified` to 0', 'a typo fix included']) expect(content).not.toContain(text);
+  });
+
+  it('memory_health names what flags a learning for the re-check queue', async () => {
+    const { toMcpToolList } = await import('./registry.js');
+    const health = toMcpToolList().find((t) => t.name === 'memory_health')!;
+    for (const text of ['a scratch path or a risk score of 3 or more', 'most-read first', 'a re-check starts there']) {
+      expect(health.description).toContain(text);
     }
   });
 });

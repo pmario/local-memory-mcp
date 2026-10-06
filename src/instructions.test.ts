@@ -136,7 +136,6 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
       'A causal word',
       'a fix that was not run',
       'an inferred claim is kept too',
-      'every sentence names its evidence', // in the checklist
     ]) {
       expect(content).toContain(text);
     }
@@ -178,6 +177,26 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
     const content = (result.data as { content: string }).content;
     for (const text of ['RFC 2119', 'MUST', 'MUST NOT', 'REQUIRED', 'SHOULD']) expect(content).toContain(text);
     for (const text of ['Always pass', 'Never store', 'Never rewrite']) expect(content).not.toContain(text);
+  });
+
+  it('the writing topic has one first-line rule: the finding as measured, with its count when it is a rule', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    for (const text of ['The first line MUST state the finding as measured or read, with its count when it is a rule', 'General knowledge']) {
+      expect(content).toContain(text);
+    }
+    for (const text of ['state the current rule', 'states the current rule', 'The first line MUST state only what was measured']) expect(content).not.toContain(text);
+  });
+
+  it('the writing topic states each rule once: the checklist points to the rules instead of restating them', async () => {
+    const { guide } = await import('./tools/insights.js');
+    const result = guide({ topic: 'writing' });
+    if (!result.success) throw new Error(result.error);
+    const content = (result.data as { content: string }).content;
+    expect(content).toContain('checklist');
+    for (const text of ['factual means the prose is gone', 'atomic means one subject']) expect(content).not.toContain(text);
   });
 
   it('the server instructions send a writer to that topic', async () => {

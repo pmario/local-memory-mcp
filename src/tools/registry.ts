@@ -219,7 +219,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_health',
-    description: 'SQLite integrity check + page-count + DB-size + WAL status, plus active learnings per style, the longest ones not yet factual, and the re-check queue: flagged learnings not re-checked since their last change, most-read first. No input.',
+    description: 'SQLite integrity check + page-count + DB-size + WAL status, plus active learnings per style, the longest ones not yet factual, and the re-check queue: learnings that a scratch path or a risk score of 3 or more flags, not re-checked since their last change, most-read first; a re-check starts there. No input.',
     schema: noInputSchema,
     handler: () => health(),
   },
