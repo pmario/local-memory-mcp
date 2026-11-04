@@ -50,8 +50,8 @@ const noInputSchema = z.object({}).strict();
 
 // What the write tools say about style, following the MEMORY_REQUIRE_STYLE start switch.
 const STYLE_RULE = STYLE_REQUIRED
-  ? 'style ["atomic", "factual"] is REQUIRED, MUST NOT be passed before checking the text against memory_guide({topic: "writing"}), and is the attestation for this write, not stored; a factual text citing a scratch path is refused'
-  : 'style ["atomic", "factual"] is OPTIONAL and MUST NOT be passed before checking the text against memory_guide({topic: "writing"}); it is the attestation for this write, not stored, and a factual text citing a scratch path is refused';
+  ? 'style ["atomic", "factual"] is REQUIRED, MUST NOT be passed before checking the text against memory_guide({topic: "writing"}), and is not stored'
+  : 'style ["atomic", "factual"] is OPTIONAL, MUST NOT be passed before checking the text against memory_guide({topic: "writing"}), and is not stored';
 
 interface ToolDef {
   name: string;
@@ -63,55 +63,55 @@ interface ToolDef {
 export const TOOLS: ToolDef[] = [
   {
     name: 'memory_session_start',
-    description: "Start a session. Lists headlines and ids of the latest session and learnings (only the project's when project is given); open entries with memory_get, or pass detail: full for whole texts. Call this FIRST in every conversation.",
+    description: "Call FIRST in every conversation. Lists headlines and ids of the latest session and learnings, the project's only when project is given; memory_get opens them, detail: full returns whole texts.",
     schema: sessionStartSchema,
     handler: (input) => sessionStart(input as z.infer<typeof sessionStartSchema>),
   },
   {
     name: 'memory_session_end',
-    description: 'End the current session with an optional summary. Call at the end of each conversation.',
+    description: 'End the session with an optional summary; call at the end of each conversation.',
     schema: sessionEndSchema,
     handler: (input) => sessionEnd(input as z.infer<typeof sessionEndSchema>),
   },
   {
     name: 'memory_learn',
-    description: `Store a learning (pattern, mistake, insight, etc.). Gatekeeper prevents duplicates. The text MUST be atomic (one subject) and factual (all the facts, no story): ${STYLE_RULE}. A factual text with an appended AMENDED, SUPERSEDED, CORRECTED, UPDATE or ADDENDUM section is refused. A part split out of another learning MUST pass splitFrom (the hub's full id) and MUST link the hub with [[id8]].`,
+    description: `Store a learning; an exact duplicate only bumps its usage count. ${STYLE_RULE}. Refused: a factual text with a scratch path or an appended correction section (AMENDED, UPDATE, …), and a split part (splitFrom: the hub's full id) whose text does not link the hub as [[id8]].`,
     schema: learnSchema,
     handler: (input) => learn(input as z.infer<typeof learnSchema>),
   },
   {
     name: 'memory_recall',
-    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags scoping and excludeProjects/excludeTags. Omit query for most-recent. detail: brief returns headlines instead of content. signal keeps learnings that any named re-check signal fires on (scratch, hedge, …; memory_health flags with the same ones), each with signals: {check: {id: what matched}}. sort: reads (full-text deliveries), uses (reads, edits, duplicate writes) or activation (ACT-R base-level activation from reads, age and last use: frequent and recent first); a sorted result shows reads and uses. A field at its default is left out, as in memory_get.',
+    description: 'Keyword recall (FTS5) over learnings only; memory_search does hybrid. Omit query for the most recent. Optional project/tags scoping and excludeProjects/excludeTags; detail: brief returns headlines.',
     schema: recallSchema,
     handler: (input) => recall(input as z.infer<typeof recallSchema>),
   },
   {
     name: 'memory_learn_archive',
-    description: 'Soft-delete a learning. Row stays for asOf-style queries; never resurfaces in recall/search. Optional reason.',
+    description: 'Soft-delete a learning, with an optional reason: memory_get still opens it, recall and search skip it.',
     schema: learnArchiveSchema,
     handler: (input) => learnArchive(input as z.infer<typeof learnArchiveSchema>),
   },
   {
     name: 'memory_learn_update',
-    description: `Edit a live learning (content, confidence, tags, project, category, splitFrom, memoryType, verified, rechecked). project null unscopes it; splitFrom null takes it out of a split. Re-embeds atomically when content changes. For a content rewrite ${STYLE_RULE}; the rewrite MUST state the current state and MUST NOT append a correction section. A hub's text MUST link every part, and a part's text MUST link its hub.`,
+    description: `Edit a live learning; project null unscopes it, splitFrom null takes it out of a split, a content change re-embeds it. For a content rewrite ${STYLE_RULE}; it is refused like a memory_learn text, and a hub's text MUST link every active part.`,
     schema: learnUpdateSchema,
     handler: (input) => learnUpdate(input as z.infer<typeof learnUpdateSchema>),
   },
   {
     name: 'memory_learn_bulk',
-    description: `Batch-insert many learnings in one atomic call (parallel embed, exact-duplicate skip). For migrations and seeding; restores go through memory_import. Each item follows memory_learn: ${STYLE_RULE}; splitFrom per item.`,
+    description: `Insert up to 500 learnings in one atomic call, skipping exact duplicates; for migrations and seeding, restores use memory_import. Each item follows memory_learn: ${STYLE_RULE}; one refused item refuses the batch.`,
     schema: learnBulkSchema,
     handler: (input) => learnBulk(input as z.infer<typeof learnBulkSchema>),
   },
   {
     name: 'memory_search',
-    description: 'Unified hybrid search across learnings, decisions, entities, and observations (FTS5 BM25 + vector cosine fused with RRF). mode: fts|vector|hybrid (default hybrid). Optional project/tags scoping and excludeProjects/excludeTags. detail: brief returns headlines for learnings and decisions; open them with memory_get.',
+    description: 'Hybrid search over learnings, decisions, entities and observations (FTS5 and vector, fused with RRF); mode: fts, vector or hybrid (default). Optional project/tags scoping and excludeProjects/excludeTags; detail: brief returns headlines, which memory_get opens.',
     schema: searchSchema,
     handler: (input) => search(input as z.infer<typeof searchSchema>),
   },
   {
     name: 'memory_get',
-    description: 'Full text of learnings, decisions and sessions by id (1-20 ids), e.g. the ids memory_session_start lists — a session id opens the whole summary a brief start truncates. An 8+ character id prefix opens its entry when unique, else comes back in ambiguous with the candidate ids. Archived learnings and decisions included; unknown ids come back in missing. asOf returns a learning as the store held it then; history: true lists its earlier versions with dates and headlines. A field at its default is left out: null, false, an empty list, confidence 0.7, memory_type semantic, lifecycle_state active, a verifiedAt equal to date, an empty missing or ambiguous.',
+    description: 'Full text of learnings, decisions and sessions by id or unique 8+ character id prefix (1-20); a session id opens the summary a brief start cuts. Archived entries included; unknown ids land in missing, shared prefixes in ambiguous. asOf returns a learning as stored then, history: true its earlier versions. A field at its default is left out.',
     schema: getSchema,
     handler: (input) => memoryGet(input as z.infer<typeof getSchema>),
   },
@@ -123,13 +123,13 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_decision_archive',
-    description: 'Retire a decision that a later one replaces or that turned out wrong. reason is required; supersededBy lists the full ids of the entries that replace it. Row stays: memory_get still opens it, marked archived; it never resurfaces in search or reflect.',
+    description: 'Retire a decision that was replaced or proved wrong: reason required, supersededBy the full ids of its successors. memory_get still opens it, marked archived; search and reflect skip it.',
     schema: decisionArchiveSchema,
     handler: (input) => decisionArchive(input as z.infer<typeof decisionArchiveSchema>),
   },
   {
     name: 'memory_entity_create',
-    description: 'Create an entity explicitly (without an initial observation). Idempotent on name+entityType. Embeds name+summary so vector/hybrid search over entities finds it.',
+    description: 'Create an entity without an observation; idempotent on name and entityType, and embedded for search.',
     schema: entityCreateSchema,
     handler: (input) => entityCreateEmbedded(input as z.infer<typeof entityCreateSchema>),
   },
@@ -147,7 +147,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_entity_open',
-    description: 'Load an entity with all its current observations and relations. Pass `asOf` (ISO date) for a bi-temporal point-in-time view.',
+    description: 'Load an entity with its current observations and relations; asOf (ISO date) gives a point-in-time view.',
     schema: entityOpenSchema,
     handler: (input) => entityOpen(input as z.infer<typeof entityOpenSchema>),
   },
@@ -159,25 +159,25 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_entity_delete',
-    description: 'Delete an entity and all its observations + relations. Destructive — use with care.',
+    description: 'Delete an entity with all its observations and relations; destructive.',
     schema: entityDeleteSchema,
     handler: (input) => entityDelete(input as z.infer<typeof entityDeleteSchema>),
   },
   {
     name: 'memory_contradictions',
-    description: 'Scan observation pairs with high cosine similarity but disagreeing negation/confidence. LLM-free heuristic. Requires sqlite-vec. Per-entity observations are capped (maxObservationsPerEntity, default 200) to bound the O(N^2) self-join.',
+    description: 'Find observation pairs with high cosine similarity but opposite negation or confidence; LLM-free, needs sqlite-vec, scans at most maxObservationsPerEntity (default 200) per entity.',
     schema: contradictionsSchema,
     handler: (input) => contradictions(input as z.infer<typeof contradictionsSchema>),
   },
   {
     name: 'memory_observation_supersede',
-    description: 'Retire an observation by setting valid_to (tombstone). Pairs with memory_contradictions. Pass supersededById to use the newer fact\'s valid_from as the cutoff (Zep fact-supersession). Row stays for asOf queries; drops out of live search/entity views.',
+    description: "Retire an observation by setting valid_to: asOf queries still see it, live views drop it. supersededById takes the newer fact's valid_from as the cutoff.",
     schema: observationSupersedeSchema,
     handler: (input) => observationSupersede(input as z.infer<typeof observationSupersedeSchema>),
   },
   {
     name: 'memory_reflect',
-    description: 'LLM-free reflection across recent memory: most-used + stale learnings, hot entities, open decisions. Returns structured data + markdown.',
+    description: 'LLM-free reflection on recent memory: most-used and stale learnings, hot entities, open decisions, as data and markdown.',
     schema: reflectSchema,
     handler: (input) => reflect(input as z.infer<typeof reflectSchema>),
   },
@@ -189,7 +189,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_profile',
-    description: 'Read or write a user profile field (name, role, preferences, …). Stored locally.',
+    description: 'Read or write a user profile field (name, role, preferences, …).',
     schema: profileSchema,
     handler: (input) => profile(input as z.infer<typeof profileSchema>),
   },
@@ -207,19 +207,19 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_export',
-    description: 'Export the whole memory to a versioned JSON envelope (learnings, decisions, knowledge graph, sessions, profile). Embeddings are re-derived on import. Same envelope imports into memory.studiomeyer.io (hosted tier).',
+    description: 'Export the whole memory (learnings, decisions, knowledge graph, sessions, profile) as a versioned JSON envelope; import re-derives embeddings.',
     schema: memoryExportSchema,
     handler: (input) => memoryExport(input as z.infer<typeof memoryExportSchema>),
   },
   {
     name: 'memory_import',
-    description: 'Import a memory_export envelope. Purely additive + idempotent (INSERT OR IGNORE on source ids), FK-safe, re-embeds on the fly. Pass {data: <envelope>}.',
+    description: 'Import a memory_export envelope as {data: <envelope>}: additive, idempotent on source ids, re-embeds.',
     schema: memoryImportSchema,
     handler: (input) => memoryImport(input as z.infer<typeof memoryImportSchema>),
   },
   {
     name: 'memory_health',
-    description: 'SQLite integrity check + page-count + DB-size + WAL status, plus the re-check queue: learnings that a scratch path or a risk score of 3 or more flags, not re-checked since their last change, most-read first, each as [id8, score, reads, reasons] with the reasons as signal ids per check (atomic, factual); a re-check starts there. No input.',
+    description: 'Integrity, size and vector status, plus the re-check queue: learnings that a scratch path or a risk score of 3 or more flags, not re-checked since their last change, most-read first, as [id8, score, reads, {check: [signal ids]}]; a re-check starts there. No input.',
     schema: noInputSchema,
     handler: () => health(),
   },

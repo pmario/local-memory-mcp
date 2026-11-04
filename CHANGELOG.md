@@ -4,6 +4,10 @@
 
 Lean session start and embeddings that cover whole entries. 27 tools, 269 → **538 tests**.
 
+### Changed — shorter texts for the model
+
+The tool list every session loads fell from 1,212 to 906 words, and the guide topics from 1,980 to 1,650. The write tools state the style rule once each and point to the writing guide instead of restating it; `memory_recall` describes `signal` and `sort` on the parameters, with the caveat that activation weighs a read in the last hours most. The guide topics use the real tool names, drop the hosted-tier and "Philosophy" lines, and the writing guide states the style rule once.
+
 ### Changed — style is an attestation; re-check reasons per check
 
 Stored style labels were wrong more often than right: on re-check, more than half of the labelled learnings failed one of the two checks. `style: ["atomic", "factual"]` stays required on a new text and a content rewrite, as the writer's attestation, but is no longer stored, returned, filtered (`style`/`excludeStyle` leave search and recall) or counted (`styles` leaves `memory_health`); a style-only update is refused. The `style_json` column keeps its old values for the Markdown sync until that drops it.

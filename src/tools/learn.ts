@@ -44,7 +44,7 @@ export const LEARNING_CATEGORIES: LearningCategory[] = [
 const zSource = z
   .string()
   .describe(
-    "Provenance: where the finding came from, such as a handoff, file, test or URL. Set once; memory_learn_update cannot change it. A part split out of a hub copies its hub's source; the split itself goes in splitFrom, never in source."
+    "Provenance: where the finding came from (a handoff, file, test or URL); set once. A split part copies its hub's source; the split goes in splitFrom."
   )
   .optional();
 
@@ -53,7 +53,7 @@ const zVerifiedAt = z
   .string()
   .refine((v) => !Number.isNaN(Date.parse(v)), { message: 'verifiedAt must be a date, e.g. "2026-09-24 10:00:00"' })
   .describe(
-    "When the facts were last confirmed, UTC. A new finding leaves it out: storing it is its first confirmation. A part split out of a hub passes the hub's verifiedAt, or the hub's date when the hub has none, because a split confirms nothing."
+    "When the facts were last confirmed, UTC. A new finding leaves it out: storing is its first confirmation. A split part passes its hub's verifiedAt, or the hub's date, because a split confirms nothing."
   )
   .optional();
 
@@ -279,13 +279,13 @@ export const learnUpdateSchema = z.object({
   verified: z
     .boolean()
     .describe(
-      "true only when the work at hand already re-confirmed every fact the entry states (it re-ran the measurement, test or probe, or re-read the cited source); never start a check just to set it. Sets verifiedAt to now, with or without a content change. A content change without it, a typo fix included, marks the text as changed since its last confirmation and keeps verifiedAt, which the server first sets to the learning's date when it is empty; a metadata change and splitFrom leave both alone."
+      "true only when this work already re-confirmed every fact (re-ran the measurement, test or probe, or re-read the source); never start a check to set it. Sets verifiedAt to now. A content change without it, a typo fix included, keeps verifiedAt, set to the learning's date when it is empty; a metadata change and splitFrom leave both alone."
     )
     .optional(),
   rechecked: z
     .boolean()
     .describe(
-      'true only when the work at hand checked the current text against memory_guide({topic: "writing"}) in a per-draft table, whatever the result; a found defect is fixed in the same call, in the text. Sets recheckedAt to now; false clears it, and so does a content change without it. memory_health lists the flagged entries not yet re-checked.'
+      'true only when this work checked the current text against memory_guide({topic: "writing"}), whatever the result; fix a found defect in the same call. Sets recheckedAt to now; false, or a content change without it, clears it.'
     )
     .optional(),
 });
@@ -579,10 +579,18 @@ export const recallSchema = z.object({
   excludeTags: z.array(z.string().min(1)).min(1).optional(),
   // brief swaps content for a headline; memory_get opens the full row.
   detail: z.enum(['brief', 'full']).optional(),
-  // Re-check signals (src/signals): only learnings that any of them fires on, each naming what it matched, per check.
-  signal: z.array(z.enum(SIGNAL_IDS)).min(1).optional(),
-  // activation is ACT-R base-level activation (src/lib/activation.ts) from reads, age and last use.
-  sort: z.enum(['reads', 'uses', 'activation']).optional(),
+  signal: z
+    .array(z.enum(SIGNAL_IDS))
+    .min(1)
+    .describe('Re-check signals (src/signals): keeps learnings any of them fires on, with what matched per check.')
+    .optional(),
+  // activation: src/lib/activation.ts.
+  sort: z
+    .enum(['reads', 'uses', 'activation'])
+    .describe(
+      'reads: full-text deliveries. uses: reads, edits and duplicate writes. activation: ACT-R, frequent and recent reads first; a read in the last hours weighs most, so long-term demand is reads. A sorted result shows reads and uses.'
+    )
+    .optional(),
 });
 
 type RecallInput = z.infer<typeof recallSchema>;

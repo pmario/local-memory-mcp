@@ -160,9 +160,11 @@ describe('memory_recall sort', () => {
     for (const key of ['reads', 'uses', 'activation', 'signals']) expect(hit).not.toHaveProperty(key);
   });
 
-  it('describes signal and sort in the tool description', async () => {
+  it('describes signal and sort on the parameters, with the recency caveat of activation', async () => {
     const { toMcpToolList } = await import('./registry.js');
-    const tool = toMcpToolList().find((t) => t.name === 'memory_recall')!;
-    for (const text of ['signal', 'sort', 'reads', 'uses', 'activation']) expect(tool.description).toContain(text);
+    const props = (toMcpToolList().find((t) => t.name === 'memory_recall')!.inputSchema as { properties: Record<string, { description?: string }> })
+      .properties;
+    expect(props.signal!.description).toContain('what matched per check');
+    for (const text of ['reads:', 'uses:', 'activation:', 'last hours']) expect(props.sort!.description).toContain(text);
   });
 });

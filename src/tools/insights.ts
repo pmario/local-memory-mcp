@@ -204,64 +204,52 @@ export function goal(input: z.infer<typeof goalSchema>): ToolResult {
 const GUIDE_TOPICS: Record<string, string> = {
   quickstart: `# Local Memory — Quickstart
 
-This MCP server gives your AI assistant persistent memory across conversations. All data stays on your machine in a single SQLite file.
+Persistent memory across conversations, in one local SQLite file.
 
-## Basic flow
-
-1. Call \`memory_session_start\` at the beginning of each conversation: it lists headlines and ids of recent context.
-2. Call \`memory_get\` with the ids whose full text you need.
-3. As the conversation progresses, call \`memory_learn\` to store knowledge and \`memory_entity_observe\` to add facts about people/projects/tools.
-4. Call \`memory_search\` or \`memory_recall\` to find past knowledge.
-5. Call \`memory_session_end\` at the end to store a summary for next time.
-
-## Philosophy
-
-- **Local-first** — everything lives in a SQLite file on your machine. No cloud, no API keys.
-- **Works everywhere** — Claude Desktop, Claude Code, Cursor, Codex, Continue.
-- **Knowledge Graph** — not just flat text. Entities, observations, relations.
-- **Duplicate guard** — the gatekeeper prevents storing the same thing twice.`,
+1. \`memory_session_start\` at the start: headlines and ids of recent context.
+2. \`memory_get\` for the full text of the ids you need.
+3. \`memory_learn\` stores knowledge, \`memory_entity_observe\` a fact about a person, project or tool.
+4. \`memory_search\` or \`memory_recall\` finds past knowledge.
+5. \`memory_session_end\` at the end stores a summary for next time.`,
 
   session: `# Sessions
 
-A session is one conversation window. It captures context, goals, and outcomes.
+A session is one conversation.
 
-- \`session_start\` — begin a session. The default \`detail: "brief"\` returns the first paragraph of the latest summary (same project preferred) and headlines of the 5 newest learnings, only the project's when \`project\` is given. \`detail: "full"\` returns the last 3 summaries and 5 whole learnings.
-- \`memory_get\` — the full text behind the ids a brief result lists; a session id opens its whole summary and open tasks.
-- \`session_end\` — close the current session with a summary.
-
-Tip: let \`session_end\` auto-detect the active session — no sessionId argument needed.`,
+- \`memory_session_start\` — the default \`detail: "brief"\` returns the first paragraph of the latest summary (same project preferred) and headlines of the 5 newest learnings, the project's only when \`project\` is given; \`detail: "full"\` returns the last 3 summaries and 5 whole learnings.
+- \`memory_get\` — the full text behind the listed ids; a session id opens its whole summary and open tasks.
+- \`memory_session_end\` — closes the active session with a summary; no sessionId needed.`,
 
   search: `# Search
 
-Use \`search\` for broad queries across everything (learnings, decisions, entities, observations).
-Use \`recall\` for quick keyword search on learnings only, or without arguments to get the most recent.
+\`memory_search\` covers learnings, decisions, entities and observations; \`memory_recall\` is keyword search on learnings only, the most recent without a query.
 
-\`memory_search\` modes: \`hybrid\` (default) fuses FTS5 (BM25) and vector cosine with Reciprocal Rank Fusion; \`fts\` and \`vector\` run one ranker alone. Embeddings come from multilingual-e5-small (100+ languages); long entries are embedded in chunks of up to 500 tokens, so vector search covers the whole text. If the vector extension can't load, search falls back to FTS5 and says so in \`notice\`.
+\`memory_search\` modes: \`hybrid\` (default) fuses FTS5 (BM25) and vector cosine with Reciprocal Rank Fusion; \`fts\` and \`vector\` run one ranker alone. Embeddings come from multilingual-e5-small (100+ languages), in chunks of up to 500 tokens, so vector search covers the whole text. Without the vector extension, search falls back to FTS5 and says so in \`notice\`.
 
-FTS5 uses bm25 ranking. Short queries work. Multi-word queries match any of the words; entries matching more of them rank higher.`,
+A multi-word query matches any of the words; entries matching more of them rank higher.`,
 
   entities: `# Knowledge Graph
 
 Entities are nodes: people, projects, companies, tools. Observations are facts about them. Relations are edges.
 
-- \`entity_observe\` — record a fact about an entity (auto-creates if missing).
-- \`entity_search\` — fuzzy search across entities and their observations.
-- \`entity_open\` — load an entity with all its observations and relations.
-- \`entity_relate\` — create a typed edge between two entities.`,
+- \`memory_entity_observe\` — records a fact about an entity, creating it if missing.
+- \`memory_entity_search\` — fuzzy search across entities and their observations.
+- \`memory_entity_open\` — an entity with its observations and relations.
+- \`memory_entity_relate\` — a typed edge between two entities.`,
 
   learn: `# Learnings
 
-Learnings are facts, patterns, insights that should persist across sessions.
+Learnings are findings that persist across sessions; topic writing says how to write one.
 
 - Categories: pattern, mistake, insight, research, architecture, infrastructure, tool, workflow, performance, security.
-- Memory type: episodic ("it happened") or semantic ("it is true"). Auto-classified.
-- Duplicate handling: exact duplicates are skipped and bump the usage counter; similar entries are stored as new rows. To enrich an existing entry, call \`memory_learn_update\` with its id.`,
+- Memory type: episodic ("it happened") or semantic ("it is true"); classified when not passed.
+- An exact duplicate only bumps the usage counter; a similar entry is stored as a new row, so extend an existing entry with \`memory_learn_update\`.`,
 
   writing: `# Writing a learning: atomic and factual
 
 Capitalised MUST, MUST NOT, REQUIRED, SHOULD and SHOULD NOT are key words as defined in RFC 2119.
 
-Every learning MUST be atomic and factual, attested with style ["atomic", "factual"]. The style is REQUIRED on every new text and every content rewrite, unless the server was started with MEMORY_REQUIRE_STYLE=0, and MUST NOT be passed before the checklist below; it is the writer's attestation for that write and is not stored. The goals are fewer tokens per read and better search hits: hybrid search embeds chunks of up to 500 tokens, split at paragraph boundaries, with a model trained on human language, and keyword search needs the exact tokens.
+Every learning MUST be atomic and factual, attested with style ["atomic", "factual"], which is REQUIRED on every new text and content rewrite (unless MEMORY_REQUIRE_STYLE=0) and is not stored. The goals are fewer tokens per read and better search hits: hybrid search embeds chunks of up to 500 tokens split at paragraphs, and keyword search needs the exact tokens.
 
 An atomic learning has one subject; an entry with several MUST be split into learnings linked with [[id8]]. Atomic is a test, not a judgment. Before drafting, the writer MUST name the subject of every paragraph and every rule of the source text and decide the split from that list. A line with another subject MUST become its own learning unless a stated reason keeps it, such as a recovery that belongs with its fault; wanting fewer entries is not a reason.
 
@@ -273,23 +261,21 @@ The text MUST be plain sentences in sentence case, with identifiers verbatim. Th
 
 A correction MUST rewrite the entry to its current state with \`memory_learn_update\`, checked line by line against the old text so no fact is lost; the server refuses a factual text with an appended \`AMENDED\`, \`SUPERSEDED\`, \`CORRECTED\`, \`UPDATE\` or \`ADDENDUM\` section.
 
-The checklist before passing the style is every rule above. The writer MUST add the style last and MUST NOT take it from a template or an earlier version of the entry.
+The checklist is every rule in this guide. The writer MUST add the style last, never from a template or an earlier version; the server checks only correction sections, scratch paths and split links, so the rest is the writer's attestation.
 
 A learning MUST be measured rather than assumed. General knowledge, such as what a setting is for, is no finding and MUST be cut. A learning SHOULD hold a finding that outlives the session (a property of a tool, runtime or convention, not one branch's state) and SHOULD NOT repeat what code, git history, CLAUDE.md or AGENTS.md record. Strong candidates are a diagnostic signature, a constraint no test catches, a corrected belief, an API unlike its obvious sibling, and a maintainer ruling with its reason; "we implemented X" or "improved" without a number does not qualify.
 
 Before writing, the writer MUST run \`memory_search\` on the subject and, when an entry covers it, MUST rewrite that entry instead of adding a second: two entries on one subject compete for the same queries, and a reader may find only the older one. A finding already recorded or true only of the session MUST NOT be stored.
 
-Metadata decides how an entry is found and filtered. The writer MUST pass \`memoryType\` (semantic for what is true, episodic for what happened): without it the classifier marks every \`mistake\` entry episodic, and any other entry whose text holds a word such as today, happened or incident, in English or German. The category MUST come from the fixed list; \`memory_learn_update\` can change memoryType, project and category later. \`project\` is the scope a learning applies to: it SHOULD name the project whose code or conventions the finding is about, and SHOULD be left empty for rules that hold across projects (the machine, a tool, how the assistant works). Tags SHOULD be useful as filters. \`source\` is provenance: it SHOULD name where the finding came from (a handoff, file, test or URL), as the text does, and it is set once, because \`memory_learn_update\` cannot change it. A part split out of a hub SHOULD copy the hub's \`source\`, which MUST NOT record the split; \`splitFrom\` does. A measured fact MUST carry the date it was measured, and the version and platform when the source records them; a writer MUST NOT infer them and MUST NOT state that they are missing.
+Metadata decides how an entry is found. The writer MUST pass \`memoryType\` (semantic for what is true, episodic for what happened), because the classifier marks every \`mistake\`, and any text saying today, happened or incident, episodic. \`project\` is the scope a learning applies to: the project whose code or conventions it is about, empty for rules that hold across projects. Tags SHOULD be useful as filters. \`source\` names where the finding came from and is set once; a split part SHOULD copy the hub's \`source\`, which MUST NOT record the split. A measured fact MUST carry the date it was measured, and the version and platform when the source records them; a writer MUST NOT infer them and MUST NOT state that they are missing.
 
-The write tools' \`verified\`, \`verifiedAt\` and \`rechecked\` fields say when to pass them, and \`memory_health\` lists the re-check queue. A writer who doubts a fact it cannot check SHOULD lower \`confidence\` and name the doubt in the text. The server refuses a factual text that cites a scratch path, naming the path. A write answers with a \`notice\` per likely failure, prefixed with the check it concerns and naming what matched: factual for a hedge outside quotation marks, a discovery story, a closing rule without evidence or a branch name; atomic for facts from three or more days or two or more handoffs, and in an update for added paragraphs or a text 30% longer. The writer SHOULD fix the text while it is still in context.
+The write tools' \`verified\`, \`verifiedAt\` and \`rechecked\` fields say when to pass them. A writer who doubts a fact it cannot check SHOULD lower \`confidence\` and name the doubt. A write answers with a \`notice\` per likely failure, prefixed with its check and naming what matched; the writer SHOULD fix the text while it is in context.
 
 Splitting keeps every subject in the store: the writer MUST store the split-off parts first, each with \`splitFrom\` set to the original's full id and a [[id8]] link to it, then rewrite the original, which keeps the subject a search most likely lands on and links every part; the original MUST NOT be rewritten before its parts exist. The server refuses a part that does not link its hub and a hub write that misses an active part, and a split has one level.
 
 A superseded entry MUST be archived, a learning with \`memory_learn_archive\` and a reason that names its successor, a decision with \`memory_decision_archive\` and its successors in \`supersededBy\`; it MUST NOT stay active with a "SUPERSEDED" first line. A handoff pointer names the handoff file, its chain and sequence, the status and the next step; there SHOULD be one per chain, the previous pointer SHOULD be archived when the next is written, and the session's lessons MUST be stored as their own entries.
 
-A learning MUST NOT hold a secret, no passphrase, key, token or credential, not even a test one; it names the file or script that holds or mints it instead.
-
-The style is the writer's attestation: the server refuses only appended correction sections, scratch paths and broken split links, so everything else in this guide is the writer's job.`,
+A learning MUST NOT hold a secret, no passphrase, key, token or credential, not even a test one; it names the file or script that holds or mints it instead.`,
 
   lifecycle: `# Lifecycle
 
@@ -299,14 +285,14 @@ The style is the writer's attestation: the server refuses only appended correcti
 - \`memory_learn_archive({learningId, reason?})\` — soft-delete a learning: it never resurfaces in search, \`memory_get\` still opens it.
 - \`memory_decision_archive({decisionId, reason, supersededBy?})\` — retire a replaced or wrong decision: it never resurfaces in search or reflect, \`memory_get\` still opens it with its successors.
 - \`memory_get({ids, asOf?, history?})\` — every update or archive keeps the replaced version of a learning; asOf reads it as the store held it then, history: true lists its versions.
-- \`memory_learn_update({learningId, content?, confidence?, tags?, project?, category?, style?, splitFrom?, memoryType?})\` — edit a live learning; project null unscopes it, splitFrom null takes it out of a split; re-embeds when the content changes, and a rewrite declares its style (see topic writing).
-- \`memory_reflect({lookbackDays?: 7})\` — most-used and stale learnings, hot entities, open decisions, as data plus a markdown summary. No LLM call.`,
+- \`memory_learn_update({learningId, content?, style?, …})\` — edit a live learning; a rewrite attests its style (topic writing).
+- \`memory_reflect({lookbackDays?: 7})\` — most-used and stale learnings, hot entities, open decisions; no LLM call.`,
 
   portability: `# Portability
 
-- \`memory_learn_bulk({items: [...]})\` — insert up to 500 learnings in one atomic call (parallel embedding, exact duplicates skipped). For migrations and seeding a fresh store; restores go through memory_import.
-- \`memory_export({includeSessions?, includeArchived?})\` — dump everything to a versioned JSON envelope. Embeddings are re-derived on import.
-- \`memory_import({data})\` — load an export envelope. Additive and idempotent. The same envelope also imports into the hosted tier (memory.studiomeyer.io).`,
+- \`memory_learn_bulk({items: [...]})\` — up to 500 learnings in one atomic call, skipping exact duplicates; for migrations and seeding.
+- \`memory_export({includeSessions?, includeArchived?})\` — everything as a versioned JSON envelope.
+- \`memory_import({data})\` — loads an export envelope, additive and idempotent, re-deriving embeddings.`,
 
   privacy: `# Privacy
 
@@ -315,7 +301,7 @@ Your memory file lives at:
 - Linux: ~/.local/share/local-memory-mcp/memory.sqlite
 - Windows: %APPDATA%\\local-memory-mcp\\memory.sqlite
 
-Nothing is sent over the network. Ever. No telemetry, no phone-home, no account.
+Nothing is sent over the network: no telemetry, no account.
 You can back up, copy, delete, or move the file at any time.
 Override the path: set MEMORY_DB_PATH=/your/preferred/path.sqlite`,
 };
