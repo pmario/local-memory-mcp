@@ -129,7 +129,8 @@ describe('memory_get reads history', () => {
     const r = await get({ ids: [id], history: true });
     const history = r.results[0]!.history as Array<Record<string, unknown>>;
     expect(history).toHaveLength(1);
-    expect(history[0]).toMatchObject({ headline: 'First headline.', recordedAt: '2026-01-01 00:00:00', archived: false });
+    expect(history[0]).toMatchObject({ headline: 'First headline.', recordedAt: '2026-01-01 00:00:00' });
+    expect(history[0]).not.toHaveProperty('archived');
     expect(history[0]).not.toHaveProperty('content');
     expect(r.results[0]!.content).toBe('Second headline.\n\nSecond body.');
   });

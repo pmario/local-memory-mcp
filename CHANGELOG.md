@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-Lean session start and embeddings that cover whole entries. 27 tools, 269 → **486 tests**.
+Lean session start and embeddings that cover whole entries. 27 tools, 269 → **497 tests**.
+
+### Changed — compact tool output
+
+Every tool answered with `JSON.stringify(result, null, 2)`, one line per array item. Results now indent with tabs and keep any array or object on one line when it fits in 120 columns, so a `memory_health` re-check entry reads `["0105c70b", 1, 7, "scratch"]`: 1,660 → 933 characters on a 2,500-learning store. `memory_get` leaves out fields at their default (null, `false`, an empty list, `confidence` 0.7, `memory_type` semantic, `lifecycle_state` active, a `verifiedAt` equal to `date`, an empty `missing` or `ambiguous`).
 
 ### Changed — one first-line rule: the finding as measured, with its count
 

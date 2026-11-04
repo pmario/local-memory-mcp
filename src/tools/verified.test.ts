@@ -58,12 +58,12 @@ async function historyCount(id: string) {
 }
 
 describe('a new learning is confirmed by being stored', () => {
-  it('stores no verified_at, and memory_get shows its date as verifiedAt', async () => {
+  it('stores no verified_at, and memory_get leaves out verified and verifiedAt, which then read as false and its date', async () => {
     const id = await storeOld('Fact measured today.');
     expect(await row(id)).toEqual({ verified: 0, verified_at: null });
     const r = await shown(id);
-    expect(r.verified).toBe(false);
-    expect(r.verifiedAt).toBe(CREATED);
+    expect(r).not.toHaveProperty('verified');
+    expect(r).not.toHaveProperty('verifiedAt');
   });
 
   it("stores a split part's verifiedAt as given", async () => {

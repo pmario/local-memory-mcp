@@ -23,6 +23,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from './lib/logger.js';
+import { formatJson } from './lib/format-json.js';
 import { closeDb, getDb } from './db/client.js';
 import { backfillEmbeddings } from './db/vector.js';
 import { getHandler, toMcpToolList, TOOLS } from './tools/registry.js';
@@ -95,7 +96,7 @@ async function main(): Promise<void> {
     const tool = getHandler(name);
     if (!tool) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ success: false, error: `Unknown tool: ${name}` }, null, 2) }],
+        content: [{ type: 'text', text: formatJson({ success: false, error: `Unknown tool: ${name}` }) }],
         isError: true,
       };
     }
@@ -106,11 +107,11 @@ async function main(): Promise<void> {
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({
+          text: formatJson({
             success: false,
             error: 'Validation failed',
             details: parsed.error.flatten(),
-          }, null, 2),
+          }),
         }],
         isError: true,
       };
@@ -119,7 +120,7 @@ async function main(): Promise<void> {
     try {
       const result = await tool.handler(parsed.data);
       return {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        content: [{ type: 'text', text: formatJson(result) }],
         isError: !result.success,
       };
     } catch (err) {
@@ -127,11 +128,11 @@ async function main(): Promise<void> {
       return {
         content: [{
           type: 'text',
-          text: JSON.stringify({
+          text: formatJson({
             success: false,
             error: err instanceof Error ? err.message : String(err),
             code: 'HANDLER_THREW',
-          }, null, 2),
+          }),
         }],
         isError: true,
       };

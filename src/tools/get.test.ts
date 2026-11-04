@@ -4,9 +4,9 @@
  * By hand against a scratch store (MEMORY_DB_PATH pointing at an empty file):
  *   memory_learn({category: 'pattern', content: 'alpha'})  -> data.id = L
  *   memory_get({ids: [L, 'nope']})
- *   -> { results: [{ type: 'learning', id: L, content: 'alpha', archived: false, ... }], missing: ['nope'], ambiguous: [] }
+ *   -> { results: [{ type: 'learning', id: L, date, category: 'pattern', content: 'alpha' }], missing: ['nope'] }
  *   memory_get({ids: [L.slice(0, 8)]})
- *   -> { results: [{ type: 'learning', id: L, ... }], missing: [], ambiguous: [] }
+ *   -> { results: [{ type: 'learning', id: L, ... }] }
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -56,7 +56,7 @@ describe('memoryGet', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     const d = result.data as GetData;
-    expect(d.missing).toEqual([]);
+    expect(d.missing).toBeUndefined();
     expect(d.results.map((r) => r.id)).toEqual([decisionId, learningId]);
     expect(d.results[0]).toMatchObject({
       type: 'decision',
@@ -65,7 +65,8 @@ describe('memoryGet', () => {
       reasoning: 'local file',
       alternatives: 'Postgres',
     });
-    expect(d.results[1]).toMatchObject({ type: 'learning', category: 'pattern', content: long, tags: ['t1'], archived: false });
+    expect(d.results[1]).toMatchObject({ type: 'learning', category: 'pattern', content: long, tags: ['t1'] });
+    expect(d.results[1]).not.toHaveProperty('archived');
   });
 
   it('lists unknown ids in missing', async () => {
@@ -89,7 +90,7 @@ describe('memoryGet', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     const d = result.data as GetData;
-    expect(d.missing).toEqual([]);
+    expect(d.missing).toBeUndefined();
     expect(d.results[0]).toMatchObject({ id: learningId, content: 'retired fact', archived: true });
   });
 
@@ -139,7 +140,7 @@ describe('memoryGet', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     const d = result.data as GetData;
-    expect(d.missing).toEqual([]);
+    expect(d.missing).toBeUndefined();
     expect(d.results[0]).toMatchObject({
       type: 'session',
       id: sessionId,
@@ -175,7 +176,7 @@ describe('memoryGet by id prefix', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     const d = result.data as GetData;
-    expect(d).toMatchObject({ missing: [], ambiguous: [] });
+    expect(Object.keys(d)).toEqual(['results']);
     expect(d.results).toHaveLength(1);
     expect(d.results[0]).toMatchObject({ type: 'learning', id: learningId, content: 'opened by prefix' });
     const usage = getDb().prepare('SELECT usage_count FROM learnings WHERE id = ?').get(learningId) as { usage_count: number };
@@ -202,7 +203,6 @@ describe('memoryGet by id prefix', () => {
     if (!result.success) return;
     expect(result.data).toEqual({
       results: [],
-      missing: [],
       ambiguous: [{ id: 'abcdef12', candidates: [first, second] }],
     });
     expect(result.message).toBe('0 found, 1 ambiguous.');
@@ -214,7 +214,7 @@ describe('memoryGet by id prefix', () => {
     const short = learningId.slice(0, 7);
     const result = memoryGet({ ids: [short] });
     if (!result.success) throw new Error('memoryGet failed');
-    expect(result.data).toEqual({ results: [], missing: [short], ambiguous: [] });
+    expect(result.data).toEqual({ results: [], missing: [short] });
   });
 
   it('lists a prefix that matches nothing in missing', async () => {
@@ -222,7 +222,7 @@ describe('memoryGet by id prefix', () => {
     await insertSession('abcdef12-0000-4000-8000-000000000001');
     const result = memoryGet({ ids: ['12345678'] });
     if (!result.success) throw new Error('memoryGet failed');
-    expect(result.data).toEqual({ results: [], missing: ['12345678'], ambiguous: [] });
+    expect(result.data).toEqual({ results: [], missing: ['12345678'] });
   });
 
   it('resolves each id of a mixed call and returns an entry asked for twice once', async () => {
@@ -261,5 +261,86 @@ describe('memory_get registration', () => {
     expect(tool).toBeDefined();
     expect(tool!.annotations).toEqual({ readOnlyHint: true, idempotentHint: true, openWorldHint: false });
     expect((tool!.inputSchema as { required?: string[] }).required).toEqual(['ids']);
+  });
+});
+
+// A field at its default is left out (local-memory-mcp-2mi), so a plain entry carries only what it says.
+describe('memoryGet leaves out fields at their default', () => {
+  it('shows a plain learning with id, date, category and content only', async () => {
+    const { memoryGet } = await import('./get.js');
+    const { learn } = await import('./learn.js');
+    const r = await learn({ category: 'pattern', content: 'plain' });
+    if (!r.success) throw new Error('setup failed');
+    const id = (r.data as { id: string }).id;
+
+    const result = memoryGet({ ids: [id] });
+    if (!result.success) throw new Error('memoryGet failed');
+    expect(Object.keys((result.data as GetData).results[0]!).sort()).toEqual(['category', 'content', 'date', 'id', 'type']);
+  });
+
+  it('shows every field of a learning that differs from its default', async () => {
+    const { memoryGet } = await import('./get.js');
+    const { learn, learnUpdate, learnArchive } = await import('./learn.js');
+    const { getDb } = await import('../db/client.js');
+    const r = await learn({ category: 'pattern', content: 'rich', project: 'p', tags: ['t'], confidence: 0.9, memoryType: 'episodic', style: ['atomic'] });
+    if (!r.success) throw new Error('setup failed');
+    const id = (r.data as { id: string }).id;
+    getDb().prepare("UPDATE learnings SET date = '2025-01-01 00:00:00' WHERE id = ?").run(id);
+    await learnUpdate({ learningId: id, verified: true });
+    learnArchive({ learningId: id, reason: 'superseded' });
+
+    const result = memoryGet({ ids: [id] });
+    if (!result.success) throw new Error('memoryGet failed');
+    const got = (result.data as GetData).results[0]!;
+    expect(got).toMatchObject({
+      project: 'p',
+      tags: ['t'],
+      style: ['atomic'],
+      confidence: 0.9,
+      memory_type: 'episodic',
+      archived: true,
+      verified: true,
+    });
+    expect(got.lifecycle_state).toMatch(/^archived/);
+    expect(got.verifiedAt).toEqual(expect.any(String));
+    expect(got.verifiedAt).not.toBe('2025-01-01 00:00:00');
+  });
+
+  it('shows a plain decision without alternatives, project, tags, confidence or archive state', async () => {
+    const { memoryGet } = await import('./get.js');
+    const { decide } = await import('./decide.js');
+    const r = await decide({ title: 'T', decision: 'D', reasoning: 'R' });
+    if (!r.success) throw new Error('setup failed');
+    const id = (r.data as { id: string }).id;
+
+    const result = memoryGet({ ids: [id] });
+    if (!result.success) throw new Error('memoryGet failed');
+    expect(Object.keys((result.data as GetData).results[0]!).sort()).toEqual(['date', 'decision', 'id', 'reasoning', 'title', 'type']);
+  });
+
+  it('shows an open session without project, end, summary or tasks', async () => {
+    const { memoryGet } = await import('./get.js');
+    const { sessionStart } = await import('./session.js');
+    const started = sessionStart({});
+    if (!started.success) throw new Error('setup failed');
+    const id = (started.data as { sessionId: string }).sessionId;
+
+    const result = memoryGet({ ids: [id] });
+    if (!result.success) throw new Error('memoryGet failed');
+    expect(Object.keys((result.data as GetData).results[0]!).sort()).toEqual(['id', 'started_at', 'type']);
+  });
+
+  it('leaves out missing and ambiguous when they are empty', async () => {
+    const { memoryGet } = await import('./get.js');
+    const id = await storeLearning('found');
+    const result = memoryGet({ ids: [id] });
+    if (!result.success) throw new Error('memoryGet failed');
+    expect(Object.keys(result.data as GetData)).toEqual(['results']);
+  });
+
+  it('states in its description that fields at their default are left out', async () => {
+    const { toMcpToolList } = await import('./registry.js');
+    const tool = toMcpToolList().find((t) => t.name === 'memory_get')!;
+    expect(tool.description).toContain('A field at its default is left out');
   });
 });

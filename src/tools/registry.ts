@@ -111,7 +111,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_get',
-    description: 'Full text of learnings, decisions and sessions by id (1-20 ids), e.g. the ids memory_session_start lists — a session id opens the whole summary a brief start truncates. An 8+ character id prefix opens its entry when unique, else comes back in ambiguous with the candidate ids. Archived learnings and decisions included; unknown ids come back in missing. asOf returns a learning as the store held it then; history: true lists its earlier versions with dates and headlines.',
+    description: 'Full text of learnings, decisions and sessions by id (1-20 ids), e.g. the ids memory_session_start lists — a session id opens the whole summary a brief start truncates. An 8+ character id prefix opens its entry when unique, else comes back in ambiguous with the candidate ids. Archived learnings and decisions included; unknown ids come back in missing. asOf returns a learning as the store held it then; history: true lists its earlier versions with dates and headlines. A field at its default is left out: null, false, an empty list, confidence 0.7, memory_type semantic, lifecycle_state active, a verifiedAt equal to date, an empty missing or ambiguous.',
     schema: getSchema,
     handler: (input) => memoryGet(input as z.infer<typeof getSchema>),
   },

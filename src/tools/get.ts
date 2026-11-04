@@ -76,6 +76,24 @@ interface DecisionRow {
 // Handoffs quote the first 8 characters of a UUID; a shorter string could open an arbitrary entry.
 const ID_PREFIX = /^[0-9a-f]{8}[0-9a-f-]{0,27}$/;
 
+// Column defaults from schema.sql that an opened entry leaves out, besides null, false and [] (local-memory-mcp-2mi).
+const DEFAULTS: Record<string, unknown> = { confidence: 0.7, memory_type: 'semantic', lifecycle_state: 'active' };
+
+/**
+ * Drops the fields of an opened entry that hold their default, so a plain entry carries only what it says.
+ * @param entry - a learning, decision, session or history version as memory_get returns it
+ * @returns the entry without null, false, empty-list and column-default fields
+ */
+function withoutDefaults(entry: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(entry).filter(([key, value]) => {
+      if (value === null || value === undefined || value === false) return false;
+      if (Array.isArray(value) && value.length === 0) return false;
+      return !(key in DEFAULTS && DEFAULTS[key] === value);
+    })
+  );
+}
+
 function idsStartingWith(db: ReturnType<typeof getDb>, prefix: string): string[] {
   const rows = db
     .prepare(
@@ -157,7 +175,7 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
     const { tags_json, style_json, archived, split_from, verified, verified_at, source, rechecked_at, ...row } = learning;
     const parts = input.asOf === undefined ? activeParts(db, row.id) : [];
     const history = input.history
-      ? (versionsOf.all(row.id) as VersionRow[]).map((v) => ({
+      ? (versionsOf.all(row.id) as VersionRow[]).map((v) => withoutDefaults({
           recordedAt: v.recorded_at,
           expiredAt: v.expired_at,
           headline: headline(v.content),
@@ -165,37 +183,36 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
           archived: v.archived === 1,
         }))
       : undefined;
-    found.set(row.id, {
+    found.set(row.id, withoutDefaults({
       type: 'learning',
       ...row,
       tags: JSON.parse(tags_json),
       style: parseStyle(style_json),
       archived: archived === 1,
-      // Storing a learning is its first confirmation (local-memory-mcp-4ip).
       verified: verified === 1,
-      verifiedAt: verified_at ?? row.date,
+      // Storing a learning is its first confirmation (local-memory-mcp-4ip), so a verifiedAt equal to date is a default.
+      verifiedAt: verified_at === row.date ? null : verified_at,
       // A split part copies its hub's source, so the writer has to be able to read it.
-      ...(source !== null ? { source } : {}),
+      source,
       // The mark belongs to the current text, so an earlier version does not show it.
-      ...(rechecked_at !== null && (version === undefined || version.expiredAt === null) ? { recheckedAt: rechecked_at } : {}),
-      ...(split_from !== null ? { splitFrom: split_from } : {}),
-      ...(parts.length > 0 ? { parts } : {}),
-      ...(version ? { version } : {}),
-      ...(history ? { history } : {}),
-    });
+      recheckedAt: version === undefined || version.expiredAt === null ? rechecked_at : null,
+      splitFrom: split_from,
+      parts,
+      version,
+      history,
+    }));
   }
   for (const { tags_json, archived, superseded_by_json, ...row } of decisions) {
-    const supersededBy = JSON.parse(superseded_by_json) as string[];
-    found.set(row.id, {
+    found.set(row.id, withoutDefaults({
       type: 'decision',
       ...row,
       tags: JSON.parse(tags_json),
       archived: archived === 1,
-      ...(supersededBy.length > 0 ? { supersededBy } : {}),
-    });
+      supersededBy: JSON.parse(superseded_by_json),
+    }));
   }
   for (const { tasks_json, ...row } of sessions) {
-    found.set(row.id, { type: 'session', ...row, tasks: tasks_json ? JSON.parse(tasks_json) : [] });
+    found.set(row.id, withoutDefaults({ type: 'session', ...row, tasks: tasks_json ? JSON.parse(tasks_json) : [] }));
   }
 
   // Counting the open keeps usage_count meaning "recalled", which memory_reflect's
@@ -219,7 +236,7 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
   ];
   return {
     success: true,
-    data: { results, missing, ambiguous },
+    data: { results, ...(missing.length > 0 ? { missing } : {}), ...(ambiguous.length > 0 ? { ambiguous } : {}) },
     message: `${counts.join(', ')}.`,
   };
 }

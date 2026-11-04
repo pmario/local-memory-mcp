@@ -141,8 +141,8 @@ describe('an archived decision leaves the live views', () => {
     if (!r.success) throw new Error(r.error);
     const [o, n] = (r.data as { results: Array<Record<string, unknown>> }).results;
     expect(o).toMatchObject({ type: 'decision', id: old, title: 'heron rule', archived: true, lifecycle_state: 'archived:superseded', supersededBy: [next] });
-    expect(n).toMatchObject({ type: 'decision', id: next, archived: false, lifecycle_state: 'active' });
-    expect(n).not.toHaveProperty('supersededBy');
+    expect(n).toMatchObject({ type: 'decision', id: next });
+    for (const key of ['archived', 'lifecycle_state', 'supersededBy']) expect(n).not.toHaveProperty(key);
     expect(o).not.toHaveProperty('superseded_by_json');
   });
 
