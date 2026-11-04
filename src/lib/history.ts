@@ -23,6 +23,25 @@ export const VERSIONED_COLUMNS = [
 
 const COLUMNS = VERSIONED_COLUMNS.join(', ');
 
+/**
+ * Reads the earlier contents of every learning, for the signals that compare versions.
+ * @param db - the store
+ * @returns earlier contents per learning id, oldest first
+ */
+export function contentVersions(db: Database.Database): Map<string, string[]> {
+  const versions = new Map<string, string[]>();
+  const rows = db.prepare('SELECT learning_id, content FROM learnings_history ORDER BY learning_id, expired_at, rowid').all() as Array<{
+    learning_id: string;
+    content: string;
+  }>;
+  for (const v of rows) {
+    const list = versions.get(v.learning_id) ?? [];
+    list.push(v.content);
+    versions.set(v.learning_id, list);
+  }
+  return versions;
+}
+
 /** When the current version of a learning became current: the end of its latest version, else its creation. */
 export function currentSince(db: Database.Database, learningId: string): string | null {
   const row = db

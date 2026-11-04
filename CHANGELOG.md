@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-Lean session start and embeddings that cover whole entries. 27 tools, 269 → **497 tests**.
+Lean session start and embeddings that cover whole entries. 27 tools, 269 → **514 tests**.
+
+### Added — `memory_recall` signal filter and sort
+
+Listing every learning that cites a scratch path took a separate script, and no tool sorted by read count. `memory_recall` now takes `signal`, any re-check signal id, and keeps the learnings it fires on, each with what matched (paths for `scratch`, words for `hedge`). `sort: "reads" | "uses" | "activation"` orders by read count, use count or ACT-R base-level activation (Petrov's hybrid approximation, d = 0.5), computed per query from the read count, the read span since the later of creation and the new `reads_since` meta row, and `last_used`.
 
 ### Changed — compact tool output
 

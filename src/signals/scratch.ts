@@ -13,6 +13,7 @@ export const scratch: Signal = {
   id: 'scratch',
   kind: 'hard',
   fires: (ctx) => scratchPaths(ctx.text).length > 0,
+  matches: (ctx) => scratchPaths(ctx.text),
   notice: (ctx) => {
     const paths = scratchPaths(ctx.text);
     return paths.length > 0

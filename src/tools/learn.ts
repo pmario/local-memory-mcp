@@ -33,9 +33,10 @@ import {
   zWrittenStyle,
 } from '../lib/style.js';
 import { checkHub, checkPart } from '../lib/split.js';
-import { withHistory } from '../lib/history.js';
+import { contentVersions, withHistory } from '../lib/history.js';
 import { countReads } from '../lib/reads.js';
-import { signalContext, writeNotices } from '../signals/index.js';
+import { activation } from '../lib/activation.js';
+import { firedSignals, SIGNAL_IDS, signalContext, writeNotices } from '../signals/index.js';
 import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
 
 // Exported so memory_import can validate against the SAME set the interactive
@@ -595,15 +596,84 @@ export const recallSchema = z.object({
   excludeStyle: zStyle.min(1).optional(),
   // brief swaps content for a headline; memory_get opens the full row.
   detail: z.enum(['brief', 'full']).optional(),
+  // Re-check signals (src/signals): only learnings that any of them fires on, each naming what it matched.
+  signal: z.array(z.enum(SIGNAL_IDS)).min(1).optional(),
+  // activation is ACT-R base-level activation (src/lib/activation.ts) from reads, age and last use.
+  sort: z.enum(['reads', 'uses', 'activation']).optional(),
 });
 
-function recallResult(rows: unknown[], detail: 'brief' | 'full' | undefined): ToolResult {
-  const results =
-    detail === 'brief'
-      ? (rows as Array<{ content: string }>).map(({ content, ...row }) => ({ ...row, headline: headline(content) }))
-      : rows;
-  if (detail !== 'brief') countReads(getDb(), (rows as Array<{ id: string }>).map((r) => r.id));
+type RecallInput = z.infer<typeof recallSchema>;
+
+interface RecallRow {
+  id: string;
+  date: string;
+  category: string;
+  content: string;
+  project: string | null;
+  confidence: number;
+  memory_type: string;
+  rank?: number;
+  read_count: number;
+  usage_count: number;
+  last_used: string | null;
+  rechecked_at: string | null;
+  signals?: Record<string, string[]>;
+  activation?: number | null;
+}
+
+/**
+ * Shapes recall rows for the caller and counts a read for each full text delivered.
+ * @param rows - the rows to return, in order
+ * @param input - the recall input, for detail and sort
+ * @returns the tool result
+ */
+function recallResult(rows: RecallRow[], input: RecallInput): ToolResult {
+  const results = rows.map(({ content, read_count, usage_count, last_used, rechecked_at, signals, activation: score, ...row }) => ({
+    ...row,
+    ...(input.detail === 'brief' ? { headline: headline(content) } : { content }),
+    ...(input.sort ? { reads: read_count, uses: usage_count } : {}),
+    ...(score != null ? { activation: Math.round(score * 100) / 100 } : {}),
+    ...(signals ? { signals, ...(rechecked_at ? { recheckedAt: rechecked_at } : {}) } : {}),
+  }));
+  if (input.detail !== 'brief') countReads(getDb(), rows.map((r) => r.id));
   return { success: true, data: { results, count: results.length } };
+}
+
+/**
+ * Keeps the rows that any of the named re-check signals fires on, each with what fired.
+ * @param db - the store, for the earlier versions the history signals compare
+ * @param rows - candidate rows
+ * @param ids - signal ids
+ * @returns the rows with their `signals`
+ */
+function withSignals(db: ReturnType<typeof getDb>, rows: RecallRow[], ids: readonly string[]): RecallRow[] {
+  const versions = contentVersions(db);
+  return rows.flatMap((r) => {
+    const signals = firedSignals(signalContext([...(versions.get(r.id) ?? []), r.content], r.category), ids);
+    return Object.keys(signals).length > 0 ? [{ ...r, signals }] : [];
+  });
+}
+
+/**
+ * Sorts rows by activation, highest first, never-read rows last in their previous order.
+ * @param db - the store, for the meta row reads_since
+ * @param rows - rows with read_count, date and last_used
+ * @returns the rows with their `activation`
+ */
+function byActivation(db: ReturnType<typeof getDb>, rows: RecallRow[]): RecallRow[] {
+  const readsSince = (db.prepare("SELECT value FROM meta WHERE key = 'reads_since'").get() as { value: string }).value;
+  const now = Date.now();
+  // Stored times are UTC without a zone, "2026-11-04 15:40:00".
+  const ms = (time: string) => Date.parse(/[TZ]/.test(time) ? time : `${time.replace(' ', 'T')}Z`);
+  const days = (since: number) => (now - since) / 86_400_000;
+  const scored = rows.map((r) => {
+    // Reads before the counter existed were not counted, so the read span starts at the later of the two.
+    const first = Math.max(ms(r.date), ms(readsSince));
+    const last = r.last_used ? ms(r.last_used) : first;
+    return { ...r, activation: activation({ reads: r.read_count, ageDays: days(first), lastReadDays: days(last) }) };
+  });
+  const key = (r: RecallRow) => r.activation ?? -Infinity;
+  return scored.sort((a, b) => (key(b) > key(a) ? 1 : key(b) < key(a) ? -1 : 0));
 }
 
 // Shared learnings-scope predicate for recall. `alias` is the table alias used
@@ -636,57 +706,86 @@ function recallScopeClause(
   return { clause: parts.length > 0 ? `AND ${parts.join(' AND ')}` : '', args };
 }
 
-export function recall(input: z.infer<typeof recallSchema>): ToolResult {
-  const db = getDb();
-  const limit = input.limit ?? 20;
+const RECALL_COLUMNS = [
+  'id', 'date', 'category', 'content', 'project', 'confidence', 'memory_type', 'read_count', 'usage_count', 'last_used', 'rechecked_at',
+];
+
+/**
+ * Selects the active learnings recall matches, in query rank or newest-first order unless sorted by a counter.
+ * @param db - the store
+ * @param input - the recall input
+ * @param limit - maximum rows, -1 for all
+ * @returns the matching rows
+ */
+function recallRows(db: ReturnType<typeof getDb>, input: RecallInput, limit: number): RecallRow[] {
+  const columns = (alias: string) => RECALL_COLUMNS.map((c) => alias + c).join(', ');
+  const order = (alias: string, fallback: string) =>
+    input.sort === 'reads'
+      ? `${alias}read_count DESC, ${alias}usage_count DESC, ${fallback}`
+      : input.sort === 'uses'
+        ? `${alias}usage_count DESC, ${alias}read_count DESC, ${fallback}`
+        : fallback;
 
   if (!input.query || input.query.trim().length === 0) {
     // No query → return most recent learnings
     const scope = recallScopeClause(input, '');
-    const rows = db
+    return db
       .prepare(
-        `SELECT id, date, category, content, project, confidence, memory_type
+        `SELECT ${columns('')}
          FROM learnings
          WHERE archived = 0
          ${scope.clause}
-         ORDER BY date DESC
+         ORDER BY ${order('', 'date DESC')}
          LIMIT ?`
       )
-      .all(...scope.args, limit);
-    return recallResult(rows, input.detail);
+      .all(...scope.args, limit) as RecallRow[];
   }
 
   // FTS5 search
   try {
     const fts = escapeFtsQuery(input.query);
     const scope = recallScopeClause(input, 'l');
-    const rows = db
+    return db
       .prepare(
-        `SELECT l.id, l.date, l.category, l.content, l.project, l.confidence, l.memory_type,
+        `SELECT ${columns('l.')},
                 bm25(search_fts) AS rank
          FROM search_fts
          JOIN learnings l ON l.id = search_fts.content_id
          WHERE search_fts MATCH ? AND search_fts.content_type = 'learning'
          AND l.archived = 0
          ${scope.clause}
-         ORDER BY rank
+         ORDER BY ${order('l.', 'rank')}
          LIMIT ?`
       )
-      .all(fts, ...scope.args, limit);
-    return recallResult(rows, input.detail);
+      .all(fts, ...scope.args, limit) as RecallRow[];
   } catch {
     // Fallback to LIKE if FTS query parsing fails
     const scope = recallScopeClause(input, '');
-    const rows = db
+    return db
       .prepare(
-        `SELECT id, date, category, content, project, confidence, memory_type
+        `SELECT ${columns('')}
          FROM learnings
          WHERE content LIKE ? AND archived = 0
          ${scope.clause}
-         ORDER BY date DESC
+         ORDER BY ${order('', 'date DESC')}
          LIMIT ?`
       )
-      .all(`%${input.query}%`, ...scope.args, limit);
-    return recallResult(rows, input.detail);
+      .all(`%${input.query}%`, ...scope.args, limit) as RecallRow[];
   }
+}
+
+/**
+ * Keyword recall over active learnings, optionally filtered by re-check signals and sorted by reads, uses or activation.
+ * @param input - query, scope, detail, signal, sort and limit
+ * @returns the matching learnings
+ */
+export function recall(input: RecallInput): ToolResult {
+  const db = getDb();
+  const limit = input.limit ?? 20;
+  // A signal or activation is computed per row, so every match is fetched and the limit applies afterwards.
+  const computed = input.signal !== undefined || input.sort === 'activation';
+  let rows = recallRows(db, input, computed ? -1 : limit);
+  if (input.signal) rows = withSignals(db, rows, input.signal);
+  if (input.sort === 'activation') rows = byActivation(db, rows);
+  return recallResult(rows.slice(0, limit), input);
 }

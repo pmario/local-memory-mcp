@@ -23,6 +23,8 @@ export interface Signal {
   // Points a score signal adds when it fires; 1 when omitted.
   weight?: number;
   fires(ctx: SignalContext): boolean;
+  // What fired, such as the paths or words, for memory_recall's signal filter; [] when omitted.
+  matches?(ctx: SignalContext): string[];
   // A write-time notice for a defect the writer can fix while the text is in context; null when there is none.
   notice?(ctx: SignalContext): string | null;
 }

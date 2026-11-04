@@ -230,3 +230,5 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1');
 INSERT OR IGNORE INTO meta (key, value) VALUES ('first_run_at', datetime('now'));
+-- When read_count started counting, which caps the read span of activation (src/lib/activation.ts).
+INSERT OR IGNORE INTO meta (key, value) VALUES ('reads_since', datetime('now'));

@@ -22,6 +22,7 @@ export function hedgeSignal(id: string, terms: Record<string, readonly string[]>
     id,
     kind: 'score',
     fires: (ctx) => found(ctx.text).length > 0,
+    matches: (ctx) => found(ctx.text),
     notice: (ctx) => {
       const words = found(ctx.text);
       return words.length > 0 ? `The text hedges (${words.join(', ')}): state what was measured, or name the doubt and lower confidence.` : null;

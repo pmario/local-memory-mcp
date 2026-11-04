@@ -22,6 +22,8 @@ export type { Assessment, Signal, SignalContext } from './types.js';
 
 export const SIGNALS: readonly Signal[] = [scratch, hedge, hedgeRomance, append, growth, handoffs, dates, branch, story, owner, maxim, workSession];
 
+export const SIGNAL_IDS = SIGNALS.map((s) => s.id) as [string, ...string[]];
+
 // A risk score at or above this flags an entry for a re-check.
 export const FLAG_SCORE = 3;
 
@@ -46,6 +48,16 @@ export function signalContext(versions: readonly string[], category: string, own
 /** Notices for defects the writer can fix now, in signal order. */
 export function writeNotices(ctx: SignalContext, signals: readonly Signal[] = SIGNALS): string[] {
   return signals.map((s) => s.notice?.(ctx) ?? null).filter((n): n is string => n !== null);
+}
+
+/**
+ * Runs the signals named in `ids` on one learning.
+ * @param ctx - the learning's signal context
+ * @param ids - signal ids to run
+ * @returns each fired signal's id with what it matched, [] for a signal that names no match
+ */
+export function firedSignals(ctx: SignalContext, ids: readonly string[]): Record<string, string[]> {
+  return Object.fromEntries(SIGNALS.filter((s) => ids.includes(s.id) && s.fires(ctx)).map((s) => [s.id, s.matches?.(ctx) ?? []]));
 }
 
 export function assess(ctx: SignalContext, signals: readonly Signal[] = SIGNALS): Assessment {

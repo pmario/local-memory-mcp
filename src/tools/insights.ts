@@ -12,6 +12,7 @@ import { getDb } from '../db/client.js';
 import { vectorStatus } from '../db/vector.js';
 import { embedMode, embedModelId, EMBEDDING_DIM } from '../lib/embed.js';
 import { STYLES } from '../lib/style.js';
+import { contentVersions } from '../lib/history.js';
 import { assess, signalContext } from '../signals/index.js';
 import type { ToolResult } from '../lib/types.js';
 
@@ -79,15 +80,7 @@ function recheckQueue(db: ReturnType<typeof getDb>) {
   const rows = db
     .prepare('SELECT id, content, category, read_count FROM learnings WHERE archived = 0 AND rechecked_at IS NULL')
     .all() as Array<{ id: string; content: string; category: string; read_count: number }>;
-  const versions = new Map<string, string[]>();
-  for (const v of db.prepare('SELECT learning_id, content FROM learnings_history ORDER BY learning_id, expired_at, rowid').all() as Array<{
-    learning_id: string;
-    content: string;
-  }>) {
-    const list = versions.get(v.learning_id) ?? [];
-    list.push(v.content);
-    versions.set(v.learning_id, list);
-  }
+  const versions = contentVersions(db);
   const flagged = rows
     .map((r) => ({ r, a: assess(signalContext([...(versions.get(r.id) ?? []), r.content], r.category)) }))
     .filter(({ a }) => a.flagged)
