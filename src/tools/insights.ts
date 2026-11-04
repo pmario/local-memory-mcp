@@ -11,7 +11,6 @@ import { z } from 'zod';
 import { getDb } from '../db/client.js';
 import { vectorStatus } from '../db/vector.js';
 import { embedMode, embedModelId, EMBEDDING_DIM } from '../lib/embed.js';
-import { STYLES } from '../lib/style.js';
 import { contentVersions } from '../lib/history.js';
 import { assess, signalContext } from '../signals/index.js';
 import type { ToolResult } from '../lib/types.js';
@@ -73,8 +72,10 @@ const QUEUE_LENGTH = 10;
 
 /**
  * The re-check queue (local-memory-mcp-w8u): active learnings not re-checked since their last content change,
- * the flagged ones among them, and the next few as [id8, score, reads, hard signals?], most-read first, since a
+ * the flagged ones among them, and the next few as [id8, score, reads, reasons per check?], most-read first, since a
  * defect costs tokens on every read.
+ * @param db - the store
+ * @returns pending and flagged counts, and the next entries
  */
 function recheckQueue(db: ReturnType<typeof getDb>) {
   const rows = db
@@ -84,12 +85,14 @@ function recheckQueue(db: ReturnType<typeof getDb>) {
   const flagged = rows
     .map((r) => ({ r, a: assess(signalContext([...(versions.get(r.id) ?? []), r.content], r.category)) }))
     .filter(({ a }) => a.flagged)
-    .map(({ r, a }) => ({ id8: r.id.slice(0, 8), score: a.score, reads: r.read_count, hard: a.hard }))
+    .map(({ r, a }) => ({ id8: r.id.slice(0, 8), score: a.score, reads: r.read_count, reasons: a.reasons }))
     .sort((a, b) => b.reads - a.reads || b.score - a.score || (a.id8 < b.id8 ? -1 : 1));
   return {
     pending: rows.length,
     flagged: flagged.length,
-    next: flagged.slice(0, QUEUE_LENGTH).map((e) => [e.id8, e.score, e.reads, ...(e.hard.length > 0 ? [e.hard.join(',')] : [])]),
+    next: flagged
+      .slice(0, QUEUE_LENGTH)
+      .map((e) => [e.id8, e.score, e.reads, ...(Object.keys(e.reasons).length > 0 ? [e.reasons] : [])]),
   };
 }
 
@@ -107,23 +110,6 @@ export function health(): ToolResult {
   const count = (table: string) => (db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
   const embeddingsCount = vec.enabled ? count('embedding_sources') : 0;
   const chunksCount = vec.enabled ? count('embedding_chunks') : 0;
-
-  // How far the rewrite to the atomic + factual rule has got, and the next candidates.
-  const styleCount = (value: string) =>
-    (db.prepare('SELECT COUNT(*) AS c FROM learnings l WHERE archived = 0 AND EXISTS (SELECT 1 FROM json_each(l.style_json) WHERE value = ?)').get(value) as { c: number }).c;
-  const styles = {
-    ...Object.fromEntries(STYLES.map((s) => [s, styleCount(s)])),
-    none: (db.prepare("SELECT COUNT(*) AS c FROM learnings WHERE archived = 0 AND json_array_length(style_json) = 0").get() as { c: number }).c,
-    longestWithoutFactual: (
-      db
-        .prepare(
-          `SELECT substr(id, 1, 8) AS id8, length(content) AS chars FROM learnings l
-           WHERE archived = 0 AND NOT EXISTS (SELECT 1 FROM json_each(l.style_json) WHERE value = 'factual')
-           ORDER BY chars DESC LIMIT 5`
-        )
-        .all() as Array<{ id8: string; chars: number }>
-    ).map((r) => [r.id8, r.chars]),
-  };
 
   return {
     success: true,
@@ -144,7 +130,6 @@ export function health(): ToolResult {
         mode: embedMode(),
         model: embedModelId(),
       },
-      styles,
       recheck: recheckQueue(db),
     },
     message: integrity === 'ok'
@@ -276,7 +261,7 @@ Learnings are facts, patterns, insights that should persist across sessions.
 
 Capitalised MUST, MUST NOT, REQUIRED, SHOULD and SHOULD NOT are key words as defined in RFC 2119.
 
-Every learning MUST be atomic and factual, declared with style ["atomic", "factual"]. The style is REQUIRED on every new text and every content rewrite, unless the server was started with MEMORY_REQUIRE_STYLE=0, and MUST NOT be passed before the checklist below. The goals are fewer tokens per read and better search hits: hybrid search embeds chunks of up to 500 tokens, split at paragraph boundaries, with a model trained on human language, and keyword search needs the exact tokens.
+Every learning MUST be atomic and factual, attested with style ["atomic", "factual"]. The style is REQUIRED on every new text and every content rewrite, unless the server was started with MEMORY_REQUIRE_STYLE=0, and MUST NOT be passed before the checklist below; it is the writer's attestation for that write and is not stored. The goals are fewer tokens per read and better search hits: hybrid search embeds chunks of up to 500 tokens, split at paragraph boundaries, with a model trained on human language, and keyword search needs the exact tokens.
 
 An atomic learning has one subject; an entry with several MUST be split into learnings linked with [[id8]]. Atomic is a test, not a judgment. Before drafting, the writer MUST name the subject of every paragraph and every rule of the source text and decide the split from that list. A line with another subject MUST become its own learning unless a stated reason keeps it, such as a recovery that belongs with its fault; wanting fewer entries is not a reason.
 
@@ -296,7 +281,7 @@ Before writing, the writer MUST run \`memory_search\` on the subject and, when a
 
 Metadata decides how an entry is found and filtered. The writer MUST pass \`memoryType\` (semantic for what is true, episodic for what happened): without it the classifier marks every \`mistake\` entry episodic, and any other entry whose text holds a word such as today, happened or incident, in English or German. The category MUST come from the fixed list; \`memory_learn_update\` can change memoryType, project and category later. \`project\` is the scope a learning applies to: it SHOULD name the project whose code or conventions the finding is about, and SHOULD be left empty for rules that hold across projects (the machine, a tool, how the assistant works). Tags SHOULD be useful as filters. \`source\` is provenance: it SHOULD name where the finding came from (a handoff, file, test or URL), as the text does, and it is set once, because \`memory_learn_update\` cannot change it. A part split out of a hub SHOULD copy the hub's \`source\`, which MUST NOT record the split; \`splitFrom\` does. A measured fact MUST carry the date it was measured, and the version and platform when the source records them; a writer MUST NOT infer them and MUST NOT state that they are missing.
 
-The write tools' \`verified\`, \`verifiedAt\` and \`rechecked\` fields say when to pass them, and \`memory_health\` lists the re-check queue. A writer who doubts a fact it cannot check SHOULD lower \`confidence\` and name the doubt in the text. A write answers with a \`notice\` when the text cites a scratch path, hedges outside quotation marks (such as likely or seems to; the notice names each one) or, in an update, adds paragraphs while keeping every old one; the writer SHOULD fix the text while it is still in context.
+The write tools' \`verified\`, \`verifiedAt\` and \`rechecked\` fields say when to pass them, and \`memory_health\` lists the re-check queue. A writer who doubts a fact it cannot check SHOULD lower \`confidence\` and name the doubt in the text. The server refuses a factual text that cites a scratch path, naming the path. A write answers with a \`notice\` per likely failure, prefixed with the check it concerns and naming what matched: factual for a hedge outside quotation marks, a discovery story, a closing rule without evidence or a branch name; atomic for facts from three or more days or two or more handoffs, and in an update for added paragraphs or a text 30% longer. The writer SHOULD fix the text while it is still in context.
 
 Splitting keeps every subject in the store: the writer MUST store the split-off parts first, each with \`splitFrom\` set to the original's full id and a [[id8]] link to it, then rewrite the original, which keeps the subject a search most likely lands on and links every part; the original MUST NOT be rewritten before its parts exist. The server refuses a part that does not link its hub and a hub write that misses an active part, and a split has one level.
 
@@ -304,7 +289,7 @@ A superseded entry MUST be archived, a learning with \`memory_learn_archive\` an
 
 A learning MUST NOT hold a secret, no passphrase, key, token or credential, not even a test one; it names the file or script that holds or mints it instead.
 
-The style label is the writer's promise: the server never adds it and checks only appended correction sections and split links, so everything else in this guide is the writer's job.`,
+The style is the writer's attestation: the server refuses only appended correction sections, scratch paths and broken split links, so everything else in this guide is the writer's job.`,
 
   lifecycle: `# Lifecycle
 

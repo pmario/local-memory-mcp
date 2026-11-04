@@ -417,9 +417,10 @@ describe('learn_update append notice', () => {
     expect(data.notice).toContain('first line');
   });
 
-  it('stays quiet when the entry was rewritten', async () => {
+  it('gives no append notice when the entry was rewritten', async () => {
+    // The rewrite doubles a short text, so growth may notice it; only the append notice is in question here.
     const data = await update('Claim: X is true.', { content: 'Claim: X is true only on Tuesdays.' });
-    expect(data).not.toHaveProperty('notice');
+    expect(data.notice ?? '').not.toContain('first line');
   });
 
   it('stays quiet on a confidence-only update and on unchanged content', async () => {

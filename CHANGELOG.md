@@ -2,7 +2,15 @@
 
 ## [Unreleased]
 
-Lean session start and embeddings that cover whole entries. 27 tools, 269 → **514 tests**.
+Lean session start and embeddings that cover whole entries. 27 tools, 269 → **535 tests**.
+
+### Changed — style is an attestation; re-check reasons per check
+
+Stored style labels were wrong more often than right: on re-check, more than half of the labelled learnings failed one of the two checks. `style: ["atomic", "factual"]` stays required on a new text and a content rewrite, as the writer's attestation, but is no longer stored, returned, filtered (`style`/`excludeStyle` leave search and recall) or counted (`styles` leaves `memory_health`); a style-only update is refused. The `style_json` column keeps its old values for the Markdown sync until that drops it.
+
+- A factual text that cites a scratch path is refused with code `SCRATCH_PATH`, naming the path. The scratch pattern now also finds a `temp` directory anywhere in a drive path (`…\AppData\Local\Temp\…`), `/var/tmp/`, `%TEMP%`, `%TMP%` and `$TMPDIR`.
+- Each signal names the check it predicts a failure of. Write-time notices are prefixed with it, and five signals gained one: `story`, `maxim` and `branch` (factual), `dates` and `handoffs` (atomic); `growth` notices in an update and now ignores link lists. `owner` and `work-session` stay priors without a reason.
+- The `memory_health` queue reads `[id8, score, reads, {factual: [...], atomic: [...]}]`, and `memory_recall` signal hits group what matched by check.
 
 ### Added — `memory_recall` signal filter and sort
 

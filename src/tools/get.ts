@@ -5,7 +5,6 @@
  */
 import { z } from 'zod';
 import { getDb, nowIso } from '../db/client.js';
-import { parseStyle } from '../lib/style.js';
 import { activeParts } from '../lib/split.js';
 import { VERSIONED_COLUMNS, currentSince } from '../lib/history.js';
 import { headline } from '../lib/brief.js';
@@ -24,11 +23,11 @@ export const getSchema = z.object({
   history: z.boolean().optional(),
 });
 
-// The columns a version replaces in a learning row; see VERSIONED_COLUMNS in src/lib/history.ts.
+// The columns a version replaces in a learning row; see VERSIONED_COLUMNS in src/lib/history.ts. style_json is not shown.
 type VersionRow = Pick<
   LearningRow,
-  'category' | 'content' | 'project' | 'tags_json' | 'confidence' | 'memory_type' | 'style_json' | 'split_from' | 'archived' | 'lifecycle_state'
-> & { recorded_at: string; expired_at: string };
+  'category' | 'content' | 'project' | 'tags_json' | 'confidence' | 'memory_type' | 'split_from' | 'archived' | 'lifecycle_state'
+> & { style_json?: string; recorded_at: string; expired_at: string };
 
 interface LearningRow {
   id: string;
@@ -37,7 +36,7 @@ interface LearningRow {
   content: string;
   project: string | null;
   tags_json: string;
-  style_json: string;
+  style_json?: string;
   confidence: number;
   memory_type: string;
   lifecycle_state: string;
@@ -128,7 +127,7 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
 
   const learnings = db
     .prepare(
-      `SELECT id, date, category, content, project, tags_json, style_json, confidence, memory_type, lifecycle_state, archived, split_from,
+      `SELECT id, date, category, content, project, tags_json, confidence, memory_type, lifecycle_state, archived, split_from,
               verified, verified_at, source, rechecked_at
        FROM learnings WHERE id IN (${placeholders})`
     )
@@ -179,7 +178,6 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
           recordedAt: v.recorded_at,
           expiredAt: v.expired_at,
           headline: headline(v.content),
-          style: parseStyle(v.style_json),
           archived: v.archived === 1,
         }))
       : undefined;
@@ -187,7 +185,6 @@ export function memoryGet(input: z.infer<typeof getSchema>): ToolResult {
       type: 'learning',
       ...row,
       tags: JSON.parse(tags_json),
-      style: parseStyle(style_json),
       archived: archived === 1,
       verified: verified === 1,
       // Storing a learning is its first confirmation (local-memory-mcp-4ip), so a verifiedAt equal to date is a default.

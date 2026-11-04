@@ -101,7 +101,8 @@ describe('style is required at the tool boundary', () => {
     const { toMcpToolList } = await import('./registry.js');
     for (const name of ['memory_learn', 'memory_learn_update', 'memory_learn_bulk']) {
       const description = toMcpToolList().find((t) => t.name === name)!.description;
-      expect(description).toContain('is REQUIRED and MUST NOT be passed before checking');
+      expect(description).toContain('is REQUIRED, MUST NOT be passed before checking');
+      expect(description).toContain('not stored');
       expect(description).not.toContain('stored with style');
       expect(description).not.toContain('stored as style');
     }
@@ -109,9 +110,9 @@ describe('style is required at the tool boundary', () => {
 });
 
 describe('no default stamp', () => {
-  it('stores exactly the style given', async () => {
+  it('stores no style when one is given: it is an attestation (local-memory-mcp-zpz)', async () => {
     const id = await store('A finding checked against the rule.');
-    expect(JSON.parse((await row(id)).style_json)).toEqual(['atomic', 'factual']);
+    expect(JSON.parse((await row(id)).style_json)).toEqual([]);
   });
 
   it('stores no style when a direct call passes none', async () => {
@@ -254,15 +255,6 @@ describe('split_from: a split records its hub and links both ways', () => {
     expect(ok.success).toBe(true);
   });
 
-  it('checks the hub links also on a style-only update of the hub', async () => {
-    const { learnUpdate } = await import('./learn.js');
-    const hub = await store('Hub text without links.');
-    await store(`Part. [[${id8(hub)}]]`, { splitFrom: hub });
-    const r = await learnUpdate({ learningId: hub, style: [...CHECKED] });
-    expect(r.success).toBe(false);
-    if (!r.success) expect(r.code).toBe('SPLIT_LINK_MISSING');
-  });
-
   it('refuses a part rewrite that drops the hub link', async () => {
     const { learnUpdate } = await import('./learn.js');
     const hub = await store('Hub text.');
@@ -344,13 +336,13 @@ describe('split_from: a split records its hub and links both ways', () => {
 });
 
 describe('memory_learn_update changes memoryType (local-memory-mcp-9z9)', () => {
-  it('sets the memory type without touching the text or style', async () => {
+  it('sets the memory type without touching the text', async () => {
     const { learnUpdate } = await import('./learn.js');
     const id = await store('A rule that was classified as an event.', { memoryType: 'episodic' });
     expect((await learnUpdate({ learningId: id, memoryType: 'semantic' })).success).toBe(true);
     const r = await row(id);
     expect(r.memory_type).toBe('semantic');
-    expect(JSON.parse(r.style_json)).toEqual(['atomic', 'factual']);
+    expect(r.content).toBe('A rule that was classified as an event.');
   });
 
   it('refuses an unknown memory type at the schema', async () => {

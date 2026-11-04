@@ -295,7 +295,6 @@ describe('memoryGet leaves out fields at their default', () => {
     expect(got).toMatchObject({
       project: 'p',
       tags: ['t'],
-      style: ['atomic'],
       confidence: 0.9,
       memory_type: 'episodic',
       archived: true,

@@ -16,6 +16,7 @@ function appended(ctx: SignalContext): boolean {
 export const append: Signal = {
   id: 'append',
   kind: 'score',
+  check: 'atomic',
   fires: appended,
   notice: (ctx) => (appended(ctx) ? APPEND_NOTICE : null),
 };

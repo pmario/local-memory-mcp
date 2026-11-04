@@ -3,10 +3,10 @@
  * each naming what matched; sort orders by read count, use count or ACT-R activation, and shows those numbers.
  *
  * Replicate by hand through the MCP tools:
- *   memory_learn({category: "pattern", content: "Probe in E:/tmp/p.js.", style: ["atomic", "factual"]})
- *   memory_recall({signal: ["scratch"], detail: "brief"})   // the hit carries signals: {scratch: ["E:/tmp/p.js"]}
+ *   memory_recall({signal: ["scratch"], detail: "brief"})   // a hit carries signals: {factual: {scratch: ["E:/tmp/p.js"]}}
  *   memory_recall({sort: "reads", detail: "brief"})         // most-read first, each with reads and uses
- * The direct SQL below sets counters and dates, which no tool writes; it is test scaffolding.
+ * The direct SQL below sets counters and dates, which no tool writes; it is test scaffolding. A factual write that cites
+ * a scratch path is refused, so storeUnattested() stands for an entry written before that refusal.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -26,7 +26,7 @@ afterEach(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-type Hit = Record<string, unknown> & { id: string; signals?: Record<string, string[]> };
+type Hit = Record<string, unknown> & { id: string; signals?: Record<string, Record<string, string[]>> };
 
 async function store(content: string, extra: Record<string, unknown> = {}): Promise<string> {
   const { learn } = await import('./learn.js');
@@ -34,6 +34,8 @@ async function store(content: string, extra: Record<string, unknown> = {}): Prom
   if (!r.success) throw new Error(r.error);
   return (r.data as { id: string }).id;
 }
+
+const storeUnattested = (content: string, extra: Record<string, unknown> = {}) => store(content, { ...extra, style: undefined });
 
 async function recallHits(input: Record<string, unknown>): Promise<Hit[]> {
   const { recall, recallSchema } = await import('./learn.js');
@@ -51,32 +53,32 @@ const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISO
 describe('memory_recall signal', () => {
   it('lists only the learnings that cite a scratch path, with the paths, re-checked ones included', async () => {
     const plain = await store('Measured in the repository tests.');
-    const one = await store('Probe in E:/tmp/p.js gave 3.');
-    const two = await store('Log at /tmp/run.log and E:\\tmp\\x\\y.txt.');
+    const one = await storeUnattested('Probe in E:/tmp/p.js gave 3.');
+    const two = await storeUnattested('Log at /tmp/run.log and E:\\tmp\\x\\y.txt.');
     await sql("UPDATE learnings SET rechecked_at = '2026-01-01 00:00:00' WHERE id = ?", two);
 
     const hits = await recallHits({ signal: ['scratch'], detail: 'brief' });
     expect(hits.map((h) => h.id).sort()).toEqual([one, two].sort());
-    expect(hits.find((h) => h.id === one)!.signals).toEqual({ scratch: ['E:/tmp/p.js'] });
-    expect(hits.find((h) => h.id === two)!.signals!.scratch!.sort()).toEqual(['/tmp/run.log', 'E:\\tmp\\x\\y.txt'].sort());
+    expect(hits.find((h) => h.id === one)!.signals).toEqual({ factual: { scratch: ['E:/tmp/p.js'] } });
+    expect(hits.find((h) => h.id === two)!.signals!.factual!.scratch!.sort()).toEqual(['/tmp/run.log', 'E:\\tmp\\x\\y.txt'].sort());
     expect(hits.find((h) => h.id === two)!.recheckedAt).toBe('2026-01-01 00:00:00');
     expect(hits.map((h) => h.id)).not.toContain(plain);
   });
 
   it('names the hedge words, and only the requested signals that fired', async () => {
-    const both = await store('It probably holds; probe in E:/tmp/p.js.');
+    const both = await storeUnattested('It probably holds; probe in E:/tmp/p.js.');
     const hedgeOnly = await store('It likely holds.');
 
     const hits = await recallHits({ signal: ['scratch', 'hedge'] });
-    expect(hits.find((h) => h.id === both)!.signals).toEqual({ scratch: ['E:/tmp/p.js'], hedge: ['probably'] });
-    expect(hits.find((h) => h.id === hedgeOnly)!.signals).toEqual({ hedge: ['likely'] });
+    expect(hits.find((h) => h.id === both)!.signals).toEqual({ factual: { scratch: ['E:/tmp/p.js'], hedge: ['probably'] } });
+    expect(hits.find((h) => h.id === hedgeOnly)!.signals).toEqual({ factual: { hedge: ['likely'] } });
   });
 
-  it('shows an empty list for a signal that names no match', async () => {
-    const id = await store('Built from branch feat/x-y at its head.');
-    const hits = await recallHits({ signal: ['branch'] });
-    expect(hits).toHaveLength(1);
-    expect(hits[0]).toMatchObject({ id, signals: { branch: [] } });
+  it('names the branch, and puts a prior with an empty list under other', async () => {
+    const branchId = await store('Built from branch feat/x-y at its head.');
+    const ownerId = await store('The maintainer ruled it in 1 review.');
+    expect(await recallHits({ signal: ['branch'] })).toEqual([expect.objectContaining({ id: branchId, signals: { factual: { branch: ['branch feat/x-y'] } } })]);
+    expect(await recallHits({ signal: ['owner'] })).toEqual([expect.objectContaining({ id: ownerId, signals: { other: { owner: [] } } })]);
   });
 
   it('finds a history signal: an update that appended a paragraph', async () => {
@@ -90,10 +92,10 @@ describe('memory_recall signal', () => {
 
   it('combines with query and project, skips archived learnings, and applies limit after filtering', async () => {
     const { learnArchive } = await import('./learn.js');
-    const wanted = await store('Heron count probe in E:/tmp/a.js.', { project: 'birds' });
-    await store('Heron count probe in E:/tmp/b.js.', { project: 'fish' });
+    const wanted = await storeUnattested('Heron count probe in E:/tmp/a.js.', { project: 'birds' });
+    await storeUnattested('Heron count probe in E:/tmp/b.js.', { project: 'fish' });
     await store('Heron count measured in tests.', { project: 'birds' });
-    const archived = await store('Heron count probe in E:/tmp/c.js.', { project: 'birds' });
+    const archived = await storeUnattested('Heron count probe in E:/tmp/c.js.', { project: 'birds' });
     learnArchive({ learningId: archived, reason: 'superseded' });
 
     expect((await recallHits({ query: 'heron', project: 'birds', signal: ['scratch'] })).map((h) => h.id)).toEqual([wanted]);

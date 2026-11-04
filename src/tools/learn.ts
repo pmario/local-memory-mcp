@@ -22,16 +22,7 @@ import { z } from 'zod';
 import { getDb, newId, nowIso, escapeFtsQuery } from '../db/client.js';
 import { prepareEmbedding, prepareEmbeddingBatch, writeEmbeddingSync, deleteEmbeddings, type PreparedEmbedding } from '../db/vector.js';
 import { headline } from '../lib/brief.js';
-import {
-  AMENDMENT_ERROR,
-  STYLE_REQUIRED,
-  STYLE_REQUIRED_ERROR,
-  hasAmendmentSection,
-  isChecked,
-  knownStyles,
-  zStyle,
-  zWrittenStyle,
-} from '../lib/style.js';
+import { STYLE_REQUIRED, STYLE_REQUIRED_ERROR, factualRefusal, isChecked, zStyle, zWrittenStyle } from '../lib/style.js';
 import { checkHub, checkPart } from '../lib/split.js';
 import { contentVersions, withHistory } from '../lib/history.js';
 import { countReads } from '../lib/reads.js';
@@ -101,8 +92,8 @@ function classifyMemoryType(content: string, category: LearningCategory): Memory
 
 export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolResult> {
   const db = getDb();
-  const style = knownStyles(input.style ?? []);
-  if (style.includes('factual') && hasAmendmentSection(input.content)) return AMENDMENT_ERROR;
+  const refused = factualRefusal(input.style ?? [], input.content);
+  if (refused) return refused;
   if (input.splitFrom !== undefined) {
     const refusal = checkPart(db, null, input.splitFrom, input.content);
     if (refusal) return refusal;
@@ -155,8 +146,8 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
   const tx = db.transaction(() => {
     db.prepare(
       `INSERT INTO learnings
-       (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json, split_from, verified_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, date, category, content, project, tags_json, confidence, source, memory_type, split_from, verified_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       nowIso(),
@@ -167,7 +158,6 @@ export async function learn(input: z.infer<typeof learnSchema>): Promise<ToolRes
       input.confidence ?? 0.7,
       input.source ?? null,
       memoryType,
-      JSON.stringify(style),
       input.splitFrom ?? null,
       input.verifiedAt ?? null
     );
@@ -280,7 +270,7 @@ export const learnUpdateSchema = z.object({
   // null moves the learning out of every project.
   project: z.string().min(1).nullable().optional(),
   category: z.enum(LEARNING_CATEGORIES as [LearningCategory, ...LearningCategory[]]).optional(),
-  // A content rewrite must declare the style itself (checked in learnUpdate, as it depends on content).
+  // The attestation a content rewrite must carry (checked in learnUpdate, as it depends on content); not stored.
   style: zStyle.optional(),
   // null ends the entry's membership in a split.
   splitFrom: z.string().min(1).nullable().optional(),
@@ -288,13 +278,13 @@ export const learnUpdateSchema = z.object({
   verified: z
     .boolean()
     .describe(
-      "true only when the work at hand already re-confirmed every fact the entry states (it re-ran the measurement, test or probe, or re-read the cited source); never start a check just to set it. Sets verifiedAt to now, with or without a content change. A content change without it, a typo fix included, marks the text as changed since its last confirmation and keeps verifiedAt, which the server first sets to the learning's date when it is empty; a metadata change, a style-only update and splitFrom leave both alone."
+      "true only when the work at hand already re-confirmed every fact the entry states (it re-ran the measurement, test or probe, or re-read the cited source); never start a check just to set it. Sets verifiedAt to now, with or without a content change. A content change without it, a typo fix included, marks the text as changed since its last confirmation and keeps verifiedAt, which the server first sets to the learning's date when it is empty; a metadata change and splitFrom leave both alone."
     )
     .optional(),
   rechecked: z
     .boolean()
     .describe(
-      'true only when the work at hand checked the current text against memory_guide({topic: "writing"}) in a per-draft table, whatever the result; a found defect is fixed in the same call, in the text or the style. Sets recheckedAt to now; false clears it, and so does a content change without it. memory_health lists the flagged entries not yet re-checked.'
+      'true only when the work at hand checked the current text against memory_guide({topic: "writing"}) in a per-draft table, whatever the result; a found defect is fixed in the same call, in the text. Sets recheckedAt to now; false clears it, and so does a content change without it. memory_health lists the flagged entries not yet re-checked.'
     )
     .optional(),
 });
@@ -302,11 +292,11 @@ export const learnUpdateSchema = z.object({
 export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Promise<ToolResult> {
   const db = getDb();
 
-  const fields = ['content', 'confidence', 'tags', 'project', 'category', 'style', 'splitFrom', 'memoryType', 'rechecked'] as const;
+  const fields = ['content', 'confidence', 'tags', 'project', 'category', 'splitFrom', 'memoryType', 'rechecked'] as const;
   if (fields.every((f) => input[f] === undefined) && input.verified !== true) {
     return {
       success: false,
-      error: 'At least one of content, confidence, tags, project, category, style, splitFrom, memoryType, rechecked or verified: true must be provided.',
+      error: 'At least one of content, confidence, tags, project, category, splitFrom, memoryType, rechecked or verified: true must be provided; style is only the attestation of a content change.',
       code: 'NOTHING_TO_UPDATE',
     };
   }
@@ -335,13 +325,14 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
 
   const willChangeContent = input.content !== undefined && input.content !== existing.content;
   if (willChangeContent && STYLE_REQUIRED && !isChecked(input.style ?? [])) return STYLE_REQUIRED_ERROR;
-  // A rewrite without a style is unchecked, whatever the old text was checked as.
-  const style = willChangeContent ? knownStyles(input.style ?? []) : input.style && knownStyles(input.style);
   const content = input.content ?? existing.content;
-  if (style?.includes('factual') && hasAmendmentSection(content)) return AMENDMENT_ERROR;
+  if (willChangeContent) {
+    const refused = factualRefusal(input.style ?? [], content);
+    if (refused) return refused;
+  }
 
-  // A write that vouches for the text (a rewrite or a style) must keep the split's links, and so must naming a hub.
-  const vouches = willChangeContent || (style !== undefined && style.length > 0);
+  // A rewrite must keep the split's links, and so must naming a hub.
+  const vouches = willChangeContent;
   const hubId = input.splitFrom === undefined ? existing.split_from : input.splitFrom;
   if (hubId !== null && (vouches || input.splitFrom !== undefined)) {
     const refusal = checkPart(db, existing.id, hubId, content);
@@ -352,10 +343,6 @@ export async function learnUpdate(input: z.infer<typeof learnUpdateSchema>): Pro
     if (refusal) return refusal;
   }
 
-  if (style) {
-    updates.push('style_json = ?');
-    args.push(JSON.stringify(style));
-  }
   if (input.splitFrom !== undefined) {
     updates.push('split_from = ?');
     args.push(input.splitFrom);
@@ -491,9 +478,8 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
   const db = getDb();
   // Refuse the whole batch before anything is written, like any other write failure.
   for (const [i, it] of input.items.entries()) {
-    let refusal: { success: false; error: string; code: string } | null = null;
-    if (knownStyles(it.style ?? []).includes('factual') && hasAmendmentSection(it.content)) refusal = AMENDMENT_ERROR;
-    else if (it.splitFrom !== undefined) refusal = checkPart(db, null, it.splitFrom, it.content);
+    let refusal: { success: false; error: string; code: string } | null = factualRefusal(it.style ?? [], it.content);
+    if (!refusal && it.splitFrom !== undefined) refusal = checkPart(db, null, it.splitFrom, it.content);
     if (refusal) return { ...refusal, error: `Item ${i}: ${refusal.error}` };
   }
   const exactStmt = db.prepare('SELECT id FROM learnings WHERE content = ? AND archived = 0 LIMIT 1');
@@ -547,8 +533,8 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
       const memoryType = it.memoryType ?? classifyMemoryType(it.content, it.category);
       db.prepare(
         `INSERT INTO learnings
-         (id, date, category, content, project, tags_json, confidence, source, memory_type, style_json, split_from, verified_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, date, category, content, project, tags_json, confidence, source, memory_type, split_from, verified_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         p.id,
         nowIso(),
@@ -559,7 +545,6 @@ export async function learnBulk(input: z.infer<typeof learnBulkSchema>): Promise
         it.confidence ?? 0.7,
         it.source ?? null,
         memoryType,
-        JSON.stringify(knownStyles(it.style ?? [])),
         it.splitFrom ?? null,
         it.verifiedAt ?? null
       );
@@ -591,12 +576,9 @@ export const recallSchema = z.object({
   tags: z.array(z.string().min(1)).min(1).optional(),
   excludeProjects: z.array(z.string().min(1)).min(1).optional(),
   excludeTags: z.array(z.string().min(1)).min(1).optional(),
-  // style matches learnings carrying ANY of the values, excludeStyle drops those carrying any.
-  style: zStyle.min(1).optional(),
-  excludeStyle: zStyle.min(1).optional(),
   // brief swaps content for a headline; memory_get opens the full row.
   detail: z.enum(['brief', 'full']).optional(),
-  // Re-check signals (src/signals): only learnings that any of them fires on, each naming what it matched.
+  // Re-check signals (src/signals): only learnings that any of them fires on, each naming what it matched, per check.
   signal: z.array(z.enum(SIGNAL_IDS)).min(1).optional(),
   // activation is ACT-R base-level activation (src/lib/activation.ts) from reads, age and last use.
   sort: z.enum(['reads', 'uses', 'activation']).optional(),
@@ -617,7 +599,7 @@ interface RecallRow {
   usage_count: number;
   last_used: string | null;
   rechecked_at: string | null;
-  signals?: Record<string, string[]>;
+  signals?: Record<string, Record<string, string[]>>;
   activation?: number | null;
 }
 
@@ -697,8 +679,6 @@ function recallScopeClause(
   };
   member('tags_json', input.tags, false);
   member('tags_json', input.excludeTags, true);
-  member('style_json', input.style, false);
-  member('style_json', input.excludeStyle, true);
   if (input.excludeProjects) {
     parts.push(`(${col}project IS NULL OR ${col}project NOT IN (${input.excludeProjects.map(() => '?').join(',')}))`);
     args.push(...input.excludeProjects);

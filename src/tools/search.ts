@@ -34,7 +34,6 @@ import { isVectorEnabled } from '../db/vector.js';
 import { embedQuery, EMBEDDING_DIM } from '../lib/embed.js';
 import { headline } from '../lib/brief.js';
 import { countReads } from '../lib/reads.js';
-import { zStyle } from '../lib/style.js';
 import type { ToolResult } from '../lib/types.js';
 
 // ─── Ranking-boost tunables ───────────────────────────
@@ -96,9 +95,6 @@ export const searchSchema = z.object({
   // Exclusions drop matching learnings and decisions and leave entities and observations alone.
   excludeProjects: z.array(z.string().min(1)).min(1).optional(),
   excludeTags: z.array(z.string().min(1)).min(1).optional(),
-  // Only learnings carry a style, so `style` returns learnings only, like `tags` returns learnings and decisions.
-  style: zStyle.min(1).optional(),
-  excludeStyle: zStyle.min(1).optional(),
   // v2.3.0 ranking-boost overrides (all optional, conservative defaults).
   ranking: z
     .object({
@@ -138,7 +134,7 @@ interface SearchRow {
  */
 type Scope = Pick<
   z.infer<typeof searchSchema>,
-  'project' | 'tags' | 'excludeProjects' | 'excludeTags' | 'style' | 'excludeStyle'
+  'project' | 'tags' | 'excludeProjects' | 'excludeTags'
 >;
 
 function buildScopeClause(scope: Scope): { clause: string; args: unknown[] } {
@@ -184,16 +180,6 @@ function buildScopeClause(scope: Scope): { clause: string; args: unknown[] } {
       OR (search_fts.content_type = 'decision' AND ${has('d', 'tags_json', scope.excludeTags)})
     )`);
     args.push(...scope.excludeTags, ...scope.excludeTags);
-  }
-
-  if (scope.style) {
-    parts.push(`(search_fts.content_type = 'learning' AND ${has('l', 'style_json', scope.style)})`);
-    args.push(...scope.style);
-  }
-
-  if (scope.excludeStyle) {
-    parts.push(`NOT (search_fts.content_type = 'learning' AND ${has('l', 'style_json', scope.excludeStyle)})`);
-    args.push(...scope.excludeStyle);
   }
 
   return { clause: parts.length > 0 ? `AND ${parts.join(' AND ')}` : '', args };
@@ -492,8 +478,6 @@ export async function search(input: z.infer<typeof searchSchema>): Promise<ToolR
     tags,
     excludeProjects: input.excludeProjects,
     excludeTags: input.excludeTags,
-    style: input.style,
-    excludeStyle: input.excludeStyle,
   };
 
   try {
@@ -561,8 +545,6 @@ export async function search(input: z.infer<typeof searchSchema>): Promise<ToolR
         ...(tags && tags.length > 0 ? { tags } : {}),
         ...(scope.excludeProjects ? { excludeProjects: scope.excludeProjects } : {}),
         ...(scope.excludeTags ? { excludeTags: scope.excludeTags } : {}),
-        ...(scope.style ? { style: scope.style } : {}),
-        ...(scope.excludeStyle ? { excludeStyle: scope.excludeStyle } : {}),
         ...(downgradeReason ? { notice: downgradeReason } : {}),
       },
       message: `${results.length} results for "${input.query}" (mode: ${effectiveMode}${downgradeReason ? `, requested ${requestedMode}` : ''}).`,

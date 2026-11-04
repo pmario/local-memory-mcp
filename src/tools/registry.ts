@@ -50,8 +50,8 @@ const noInputSchema = z.object({}).strict();
 
 // What the write tools say about style, following the MEMORY_REQUIRE_STYLE start switch.
 const STYLE_RULE = STYLE_REQUIRED
-  ? 'style ["atomic", "factual"] is REQUIRED and MUST NOT be passed before checking the text against memory_guide({topic: "writing"})'
-  : 'style ["atomic", "factual"] is OPTIONAL and MUST NOT be passed before checking the text against memory_guide({topic: "writing"}); without it the entry is stored unchecked';
+  ? 'style ["atomic", "factual"] is REQUIRED, MUST NOT be passed before checking the text against memory_guide({topic: "writing"}), and is the attestation for this write, not stored; a factual text citing a scratch path is refused'
+  : 'style ["atomic", "factual"] is OPTIONAL and MUST NOT be passed before checking the text against memory_guide({topic: "writing"}); it is the attestation for this write, not stored, and a factual text citing a scratch path is refused';
 
 interface ToolDef {
   name: string;
@@ -81,7 +81,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_recall',
-    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags/style scoping and excludeProjects/excludeTags/excludeStyle. Omit query for most-recent. detail: brief returns headlines instead of content. signal keeps learnings that any named re-check signal fires on (scratch, hedge, …; memory_health flags with the same ones), each with signals: {id: what matched}. sort: reads (full-text deliveries), uses (reads, edits, duplicate writes) or activation (ACT-R base-level activation from reads, age and last use: frequent and recent first); a sorted result shows reads and uses.',
+    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags scoping and excludeProjects/excludeTags. Omit query for most-recent. detail: brief returns headlines instead of content. signal keeps learnings that any named re-check signal fires on (scratch, hedge, …; memory_health flags with the same ones), each with signals: {check: {id: what matched}}. sort: reads (full-text deliveries), uses (reads, edits, duplicate writes) or activation (ACT-R base-level activation from reads, age and last use: frequent and recent first); a sorted result shows reads and uses.',
     schema: recallSchema,
     handler: (input) => recall(input as z.infer<typeof recallSchema>),
   },
@@ -93,7 +93,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_learn_update',
-    description: `Edit a live learning (content, confidence, tags, project, category, style, splitFrom, memoryType, verified, rechecked). project null unscopes it; splitFrom null takes it out of a split. Re-embeds atomically when content changes. For a content rewrite ${STYLE_RULE}; the rewrite MUST state the current state and MUST NOT append a correction section. A hub's text MUST link every part, and a part's text MUST link its hub.`,
+    description: `Edit a live learning (content, confidence, tags, project, category, splitFrom, memoryType, verified, rechecked). project null unscopes it; splitFrom null takes it out of a split. Re-embeds atomically when content changes. For a content rewrite ${STYLE_RULE}; the rewrite MUST state the current state and MUST NOT append a correction section. A hub's text MUST link every part, and a part's text MUST link its hub.`,
     schema: learnUpdateSchema,
     handler: (input) => learnUpdate(input as z.infer<typeof learnUpdateSchema>),
   },
@@ -105,7 +105,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_search',
-    description: 'Unified hybrid search across learnings, decisions, entities, and observations (FTS5 BM25 + vector cosine fused with RRF). mode: fts|vector|hybrid (default hybrid). Optional project/tags/style scoping and excludeProjects/excludeTags/excludeStyle. detail: brief returns headlines for learnings and decisions; open them with memory_get.',
+    description: 'Unified hybrid search across learnings, decisions, entities, and observations (FTS5 BM25 + vector cosine fused with RRF). mode: fts|vector|hybrid (default hybrid). Optional project/tags scoping and excludeProjects/excludeTags. detail: brief returns headlines for learnings and decisions; open them with memory_get.',
     schema: searchSchema,
     handler: (input) => search(input as z.infer<typeof searchSchema>),
   },
@@ -219,7 +219,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_health',
-    description: 'SQLite integrity check + page-count + DB-size + WAL status, plus active learnings per style, the longest ones not yet factual, and the re-check queue: learnings that a scratch path or a risk score of 3 or more flags, not re-checked since their last change, most-read first; a re-check starts there. No input.',
+    description: 'SQLite integrity check + page-count + DB-size + WAL status, plus the re-check queue: learnings that a scratch path or a risk score of 3 or more flags, not re-checked since their last change, most-read first, each as [id8, score, reads, reasons] with the reasons as signal ids per check (atomic, factual); a re-check starts there. No input.',
     schema: noInputSchema,
     handler: () => health(),
   },

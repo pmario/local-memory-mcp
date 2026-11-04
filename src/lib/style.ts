@@ -1,10 +1,10 @@
 /**
- * The writing styles a learning can carry (local-memory-mcp-57k, -i8n).
+ * The writing styles a writer declares (local-memory-mcp-57k, -i8n, -zpz): an attestation on each write, not stored.
  *
  * `atomic`: one subject per entry; `factual`: all the facts, the current state only, no story.
- * A style value is the writer's statement that the entry was checked; the server never adds one.
  */
 import { z } from 'zod';
+import { scratchPaths } from '../signals/scratch.js';
 
 export const STYLES = ['atomic', 'factual'] as const;
 export type Style = (typeof STYLES)[number];
@@ -48,6 +48,24 @@ export const AMENDMENT_ERROR = {
   error: 'A factual entry MUST state the current state: rewrite the text, and MUST NOT append an AMENDED, SUPERSEDED, CORRECTED, UPDATE or ADDENDUM section.',
   code: 'AMENDMENT_SECTION',
 };
+
+/**
+ * Refuses a text declared factual that contradicts the declaration (local-memory-mcp-zpz): an amendment section or a scratch path.
+ * @param style - the declared style
+ * @param content - the text to write
+ * @returns the refusal, or null when the text may be written
+ */
+export function factualRefusal(style: readonly unknown[], content: string) {
+  if (!style.includes('factual')) return null;
+  if (hasAmendmentSection(content)) return AMENDMENT_ERROR;
+  const paths = scratchPaths(content);
+  if (paths.length === 0) return null;
+  return {
+    success: false as const,
+    error: `Refused: the text is declared factual but cites a scratch path (${paths.join(', ')}). A scratch file does not last, so the evidence it holds is lost: move it to a versioned directory and cite that path, or state the result without the path.`,
+    code: 'SCRATCH_PATH',
+  };
+}
 
 /** The known styles in `values`, in list order, without duplicates; unknown values are dropped. */
 export function knownStyles(values: readonly unknown[]): Style[] {

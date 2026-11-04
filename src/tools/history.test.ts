@@ -74,17 +74,15 @@ describe('learnings_history records every change', () => {
     expect(v[1]!.recorded_at).toBe('2026-02-01 00:00:00');
   });
 
-  it('versions metadata changes too: tags, style, archive', async () => {
+  it('versions metadata changes too: tags, archive', async () => {
     const { learnUpdate, learnArchive } = await import('./learn.js');
     const id = await storeOld('Stable text.');
     await learnUpdate({ learningId: id, tags: ['a'] });
-    await learnUpdate({ learningId: id, style: [] });
     learnArchive({ learningId: id, reason: 'obsolete' });
     const v = await versions(id);
-    expect(v).toHaveLength(3);
+    expect(v).toHaveLength(2);
     expect(JSON.parse(v[0]!.tags_json)).toEqual([]);
-    expect(JSON.parse(v[1]!.style_json)).toEqual(['atomic', 'factual']);
-    expect(v[2]!.archived).toBe(0);
+    expect(v[1]!.archived).toBe(0);
   });
 
   it('records nothing when no versioned field changes or the write is refused', async () => {
@@ -106,7 +104,7 @@ describe('memory_get reads history', () => {
 
     const before = await get({ ids: [id], asOf: '2026-06-01' });
     expect(before.results[0]!.content).toBe('Old text.');
-    expect(before.results[0]!.style).toEqual(['atomic', 'factual']);
+    expect(before.results[0]).not.toHaveProperty('style');
     expect(before.results[0]!.version).toEqual({ recordedAt: '2026-01-01 00:00:00', expiredAt: expect.any(String) });
 
     const now = await get({ ids: [id], asOf: '2099-01-01' });

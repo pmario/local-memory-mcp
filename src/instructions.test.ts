@@ -99,7 +99,7 @@ describe('the writing rule reaches every session that writes (local-memory-mcp-l
       'handoff pointer',
       'date', // when it was measured
       'secret', // never store one
-      'promise', // the style label
+      'attestation', // the style, not stored
     ]) {
       expect(content).toContain(text);
     }

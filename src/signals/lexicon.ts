@@ -21,6 +21,7 @@ export function hedgeSignal(id: string, terms: Record<string, readonly string[]>
   return {
     id,
     kind: 'score',
+    check: 'factual',
     fires: (ctx) => found(ctx.text).length > 0,
     matches: (ctx) => found(ctx.text),
     notice: (ctx) => {

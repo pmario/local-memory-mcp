@@ -58,7 +58,8 @@ async function row(id: string) {
 
 describe('write-time notices', () => {
   it('memory_learn names a scratch path and a hedge, and stays quiet on a measured text', async () => {
-    const bad = await learnData('The walk stops early, probably at the import. Probe at e:/tmp/toc/probe.js.');
+    // Declared factual, a scratch path is refused (attestation-reasons.test.ts); a direct call without style gets the notice.
+    const bad = await learnData('The walk stops early, probably at the import. Probe at e:/tmp/toc/probe.js.', { style: undefined });
     expect(bad.notice).toContain('e:/tmp/toc/probe.js');
     expect(bad.notice).toContain('probably');
     expect((await learnData('The walk stops at the import. Measured 2026-08-01 on master.')).notice).toBeUndefined();
@@ -69,7 +70,8 @@ describe('write-time notices', () => {
     const inserted = await update({ learningId: id, content: 'Rule.\n\nCase one.\n\nA later finding.\n\nRelated: [[aaaaaaaa]].', style: [...CHECKED] });
     expect(inserted.notice).toContain('first line');
     const linked = await update({ learningId: id, content: 'Rule.\n\nCase one.\n\nA later finding.\n\nRelated: [[aaaaaaaa]], [[bbbbbbbb]].', style: [...CHECKED] });
-    expect(linked).not.toHaveProperty('notice');
+    // The bare paragraphs draw a maxim notice on every write; only the append notice is in question here.
+    expect(linked.notice ?? '').not.toContain('first line');
   });
 
   it('memory_learn_update names a hedge in the new text', async () => {
@@ -82,13 +84,13 @@ describe('write-time notices', () => {
     const r = await learnBulk({
       items: [
         { category: 'research', content: 'Clean measured item.', style: [...CHECKED] },
-        { category: 'research', content: 'Evidence in /tmp/run.log.', style: [...CHECKED] },
+        { category: 'research', content: 'It probably holds in 2 runs.', style: [...CHECKED] },
       ],
     });
     if (!r.success) throw new Error(r.error);
     const results = (r.data as { results: Array<{ index: number; notice?: string }> }).results;
     expect(results[0]).not.toHaveProperty('notice');
-    expect(results[1]!.notice).toContain('/tmp/run.log');
+    expect(results[1]!.notice).toContain('probably');
   });
 });
 
@@ -105,10 +107,10 @@ describe('re-checked mark', () => {
     expect((got.data as { results: Array<{ recheckedAt?: string }> }).results[0]!.recheckedAt).toBe(at);
   });
 
-  it('survives a style-only update and is cleared by a content change without rechecked', async () => {
+  it('survives a metadata update and is cleared by a content change without rechecked', async () => {
     const id = await store('A rule with a closing maxim.');
     await update({ learningId: id, rechecked: true });
-    await update({ learningId: id, style: ['atomic'] });
+    await update({ learningId: id, tags: ['moved'] });
     expect((await row(id)).rechecked_at).not.toBeNull();
     await update({ learningId: id, content: 'A rule, rewritten.', style: [...CHECKED] });
     expect((await row(id)).rechecked_at).toBeNull();
@@ -158,21 +160,24 @@ describe('memory_health: the re-check queue', () => {
     await store('The V operator probably returns U. From the docs.');
     // hedge, owner, handoffs and work-session: score 4.
     const risky = await store('The Y operator probably returns Z; the maintainer reported it (HANDOFF_A_x_2026-07-01.md, HANDOFF_B_y_2026-07-02.md).', { category: 'insight' });
-    const scratch = await store('The Z operator returns W. Probe at E:/tmp/z.js.');
-    const rechecked = await store('The W operator returns V. Probe at E:/tmp/w.js.');
+    // A scratch path declared factual is refused, so these stand for entries written before the refusal: no style.
+    const unattested = { style: undefined };
+    const scratch = await store('The Z operator returns W. Probe at E:/tmp/z.js.', unattested);
+    const rechecked = await store('The W operator returns V. Probe at E:/tmp/w.js.', unattested);
     await update({ learningId: rechecked, rechecked: true });
-    learnArchive({ learningId: await store('Archived. Probe at E:/tmp/a.js.') });
+    learnArchive({ learningId: await store('Archived. Probe at E:/tmp/a.js.', unattested) });
     for (let i = 0; i < 3; i++) memoryGet({ ids: [risky] });
     memoryGet({ ids: [scratch] });
 
     const r = health();
     if (!r.success) throw new Error(r.error);
-    const recheck = (r.data as { recheck: { pending: number; flagged: number; next: Array<[string, number, number, string?]> } }).recheck;
+    const recheck = (r.data as { recheck: { pending: number; flagged: number; next: unknown[][] } }).recheck;
     expect(recheck.pending).toBe(4);
     expect(recheck.flagged).toBe(2);
+    // owner and work-session score but are priors, so they name no reason.
     expect(recheck.next).toEqual([
-      [risky.slice(0, 8), 4, 3],
-      [scratch.slice(0, 8), 0, 1, 'scratch'],
+      [risky.slice(0, 8), 4, 3, { factual: ['hedge'], atomic: ['handoffs'] }],
+      [scratch.slice(0, 8), 0, 1, { factual: ['scratch'] }],
     ]);
   });
 });

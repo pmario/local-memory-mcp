@@ -22,6 +22,8 @@ export interface Signal {
   kind: 'hard' | 'score';
   // Points a score signal adds when it fires; 1 when omitted.
   weight?: number;
+  // The check a firing predicts a failure of; omitted for a prior, which scores but names no reason.
+  check?: 'atomic' | 'factual';
   fires(ctx: SignalContext): boolean;
   // What fired, such as the paths or words, for memory_recall's signal filter; [] when omitted.
   matches?(ctx: SignalContext): string[];
@@ -34,4 +36,6 @@ export interface Assessment {
   // Ids of the hard signals that fired.
   hard: string[];
   flagged: boolean;
+  // Fired signal ids per check, priors left out.
+  reasons: Record<string, string[]>;
 }

@@ -86,13 +86,14 @@ describe('memory_learn_update: project and category', () => {
   });
 });
 
+// Since local-memory-mcp-zpz the style is an attestation and not stored; attestation-reasons.test.ts holds that contract.
 describe('style: atomic and factual', () => {
-  it('stores the style declared on a bulk item', async () => {
+  it('stores no style for a bulk item', async () => {
     const { learnBulk } = await import('./learn.js');
     const r = await learnBulk({ items: [{ category: 'pattern', content: 'bulk style target', style: ['atomic', 'factual'] }] });
     if (!r.success) throw new Error(r.error);
     const id = (r.data as { results: Array<{ id: string }> }).results[0]!.id;
-    expect(JSON.parse((await row(id)).style_json)).toEqual(['atomic', 'factual']);
+    expect(JSON.parse((await row(id)).style_json)).toEqual([]);
   });
 
   it('refuses a style value outside the fixed list', async () => {
@@ -114,14 +115,14 @@ describe('style: atomic and factual', () => {
 
   it('accepts the word amended inside a sentence', async () => {
     const id = await store('The policy was amended in 2026 and now says X.');
-    expect(JSON.parse((await row(id)).style_json)).toEqual(['atomic', 'factual']);
+    expect((await row(id)).content).toBe('The policy was amended in 2026 and now says X.');
   });
 
-  it('stores the declared style on a content rewrite of a legacy entry', async () => {
+  it('accepts a factual content rewrite of a legacy entry, leaving its stored column alone', async () => {
     const { learnUpdate } = await import('./learn.js');
     const id = await storeLegacy('OLD STYLE ENTRY.\n\n=== AMENDED 2026-08-01 ===\n\nMore.');
     expect((await learnUpdate({ learningId: id, content: 'Rewritten to the current state.', style: ['atomic', 'factual'] })).success).toBe(true);
-    expect(JSON.parse((await row(id)).style_json)).toEqual(['atomic', 'factual']);
+    expect(await row(id)).toMatchObject({ content: 'Rewritten to the current state.', style_json: '[]' });
   });
 
   it('refuses a content rewrite that appends an amendment section, and leaves the row alone', async () => {
@@ -140,30 +141,11 @@ describe('style: atomic and factual', () => {
     expect(JSON.parse((await row(id)).style_json)).toEqual([]);
   });
 
-  it('sets a style without a rewrite, but not factual over an amendment section', async () => {
-    const { learnUpdate } = await import('./learn.js');
-    const clean = await storeLegacy('An entry already written to the rule.');
-    expect((await learnUpdate({ learningId: clean, style: ['atomic', 'factual'] })).success).toBe(true);
-    expect(JSON.parse((await row(clean)).style_json)).toEqual(['atomic', 'factual']);
-
-    const amended = await storeLegacy('Claim.\n\n=== AMENDED 2026-09-08 ===\n\nMore.');
-    const r = await learnUpdate({ learningId: amended, style: ['factual'] });
-    expect(r.success).toBe(false);
-    if (!r.success) expect(r.code).toBe('AMENDMENT_SECTION');
-    expect(JSON.parse((await row(amended)).style_json)).toEqual([]);
-  });
-
-  it('memory_get shows the style', async () => {
-    const { memoryGet } = await import('./get.js');
-    const id = await store('style shown by get');
-    const r = memoryGet({ ids: [id] });
-    if (!r.success) throw new Error(r.error);
-    expect((r.data as { results: Array<{ style: string[] }> }).results[0]!.style).toEqual(['atomic', 'factual']);
-  });
-
-  it('survives an export and import round trip, dropping unknown values', async () => {
+  it('carries a stored column value through an export and import round trip, dropping unknown values', async () => {
     const { memoryExport, memoryImport } = await import('./export.js');
     const id = await store('style round trip');
+    // The column outlives the attestation until the Markdown sync drops it, so export and import still carry it.
+    (await import('../db/client.js')).getDb().prepare(`UPDATE learnings SET style_json = '["atomic","factual"]' WHERE id = ?`).run(id);
     const exported = memoryExport({});
     if (!exported.success) throw new Error(exported.error);
     const envelope = exported.data as { learnings: Array<{ id: string; style: string[] }> };
@@ -187,7 +169,7 @@ describe('style: atomic and factual', () => {
   });
 });
 
-describe('search and recall: exclusion and style filters', () => {
+describe('search and recall: exclusion filters', () => {
   async function seed() {
     return {
       facets: await store('okapi facets finding', { project: 'P2P', tags: ['facets'] }),
@@ -207,41 +189,12 @@ describe('search and recall: exclusion and style filters', () => {
     expect(byProject).toContain(e.legacy);
   });
 
-  it('memory_search filters by style and excludes a style', async () => {
-    const { search } = await import('./search.js');
-    const e = await seed();
-    expect(await ids(await search({ query: 'okapi', mode: 'fts', style: ['factual'] }))).not.toContain(e.legacy);
-    expect(await ids(await search({ query: 'okapi', mode: 'fts', excludeStyle: ['factual'] }))).toEqual([e.legacy]);
-  });
-
   it('memory_recall takes the same filters, with and without a query', async () => {
     const { recall } = await import('./learn.js');
     const e = await seed();
     for (const query of ['okapi', undefined]) {
       expect(await ids(recall({ query, excludeTags: ['pgsd-server'] }))).not.toContain(e.server);
       expect(await ids(recall({ query, excludeProjects: ['PGSD'] }))).toContain(e.legacy);
-      expect(await ids(recall({ query, excludeStyle: ['factual'] }))).toEqual([e.legacy]);
-      expect(await ids(recall({ query, style: ['atomic'] }))).not.toContain(e.legacy);
     }
-  });
-});
-
-describe('memory_health: styles', () => {
-  it('counts active learnings per style and names the longest without factual', async () => {
-    const { health } = await import('./insights.js');
-    const { learnArchive } = await import('./learn.js');
-    await store('styled one');
-    const long = await storeLegacy('x'.repeat(500));
-    await storeLegacy('y'.repeat(50));
-    learnArchive({ learningId: await storeLegacy('z'.repeat(900)) });
-
-    const r = health();
-    if (!r.success) throw new Error(r.error);
-    const styles = (r.data as { styles: { atomic: number; factual: number; none: number; longestWithoutFactual: Array<[string, number]> } }).styles;
-    expect(styles.atomic).toBe(1);
-    expect(styles.factual).toBe(1);
-    expect(styles.none).toBe(2);
-    expect(styles.longestWithoutFactual[0]).toEqual([long.slice(0, 8), 500]);
-    expect(styles.longestWithoutFactual).toHaveLength(2);
   });
 });

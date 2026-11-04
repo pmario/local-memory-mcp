@@ -61,7 +61,8 @@ describe('writeNotices', () => {
 
   it('notices paragraphs added anywhere to an old text, not a rewrite or an added link', () => {
     expect(notices('Rule.\n\nCase.\n\nLater finding.\n\nRelated: [[aaaaaaaa]].', 'Rule.\n\nCase.\n\nRelated: [[aaaaaaaa]].')[0]).toContain('first line');
-    expect(notices('Rule, restated.\n\nCase.\n\nMore.', 'Rule.\n\nCase.')).toEqual([]);
+    // A rewrite can draw other notices (maxim, growth); only the append notice is in question here.
+    expect(notices('Rule, restated.\n\nCase.\n\nMore.', 'Rule.\n\nCase.').join(' ')).not.toContain('first line');
     expect(notices('Rule.\n\nRelated: [[bbbbbbbb]] (a neighbour).', 'Rule.')).toEqual([]);
     expect(notices('Rule.\n\nPart of [[cccccccc]] (the hub).', 'Rule.')).toEqual([]);
   });
@@ -73,6 +74,7 @@ describe('assess', () => {
       score: 0,
       hard: [],
       flagged: false,
+      reasons: {},
     });
   });
 
@@ -84,13 +86,28 @@ describe('assess', () => {
       'Always question every cache you did not build yourself.',
     ].join('\n\n');
     const a = assess(signalContext([first, grown], 'insight', []));
-    // append, growth, handoffs, dates, story, owner, maxim and work-session fire; branch does not.
-    expect(a).toEqual({ score: 8, hard: [], flagged: true });
+    // append, growth, handoffs, dates, story, owner, maxim and work-session fire; branch does not. owner and work-session are priors.
+    expect(a).toEqual({
+      score: 8,
+      hard: [],
+      flagged: true,
+      reasons: { atomic: ['append', 'growth', 'handoffs', 'dates'], factual: ['story', 'maxim'] },
+    });
   });
 
   it('flags a scratch path on its own, while a hedge adds one point', () => {
-    expect(assess(signalContext(['Kept in E:/tmp/probe.js. From the docs.'], 'research'))).toEqual({ score: 0, hard: ['scratch'], flagged: true });
-    expect(assess(signalContext(['It probably retries. From the docs.'], 'research'))).toEqual({ score: 1, hard: [], flagged: false });
+    expect(assess(signalContext(['Kept in E:/tmp/probe.js. From the docs.'], 'research'))).toEqual({
+      score: 0,
+      hard: ['scratch'],
+      flagged: true,
+      reasons: { factual: ['scratch'] },
+    });
+    expect(assess(signalContext(['It probably retries. From the docs.'], 'research'))).toEqual({
+      score: 1,
+      hard: [],
+      flagged: false,
+      reasons: { factual: ['hedge'] },
+    });
   });
 
   it('counts a configured owner name like "the maintainer"', () => {
@@ -110,14 +127,15 @@ describe('the plugin contract', () => {
       notice: (ctx) => (/\b[A-Z]{5,}\b/.test(ctx.text) ? 'The text shouts.' : null),
     };
     const ctx = signalContext(['NEVER do this.'], 'research');
-    expect(assess(ctx, [shouting])).toEqual({ score: 0, hard: ['shouting'], flagged: true });
+    // A signal without a check is a prior: it flags, but names no reason.
+    expect(assess(ctx, [shouting])).toEqual({ score: 0, hard: ['shouting'], flagged: true, reasons: {} });
     expect(writeNotices(ctx, [shouting])).toEqual(['The text shouts.']);
     expect(assess(ctx, [...SIGNALS])).toEqual(assess(ctx));
   });
 
   it('adds a score signal by its weight against the flag threshold', () => {
     const heavy: Signal = { id: 'heavy', kind: 'score', weight: FLAG_SCORE, fires: () => true };
-    expect(assess(signalContext(['Any text.'], 'research'), [heavy])).toEqual({ score: FLAG_SCORE, hard: [], flagged: true });
+    expect(assess(signalContext(['Any text.'], 'research'), [heavy])).toEqual({ score: FLAG_SCORE, hard: [], flagged: true, reasons: {} });
   });
 
   it('registers each signal once, under a unique id', () => {
