@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-Lean session start and embeddings that cover whole entries. 27 tools, 269 → **538 tests**.
+Lean session start and embeddings that cover whole entries. 27 tools, 269 → **544 tests**.
 
 ### Changed — shorter texts for the model
 
@@ -12,7 +12,7 @@ The tool list every session loads fell from 1,212 to 906 words, and the guide to
 
 Stored style labels were wrong more often than right: on re-check, more than half of the labelled learnings failed one of the two checks. `style: ["atomic", "factual"]` stays required on a new text and a content rewrite, as the writer's attestation, but is no longer stored, returned, filtered (`style`/`excludeStyle` leave search and recall) or counted (`styles` leaves `memory_health`); a style-only update is refused. The `style_json` column keeps its old values for the Markdown sync until that drops it.
 
-- A factual text that cites a scratch path is refused with code `SCRATCH_PATH`, naming the path. The scratch pattern now also finds a `temp` directory anywhere in a drive path (`…\AppData\Local\Temp\…`), `/var/tmp/`, `%TEMP%`, `%TMP%` and `$TMPDIR`.
+- A factual text that cites a scratch path is refused with code `SCRATCH_PATH`, naming the path. The scratch pattern now also finds a `temp` directory anywhere in a drive path (`…\AppData\Local\Temp\…`), `/var/tmp/`, `%TEMP%`, `%TMP%` and `$TMPDIR`, and skips a path inside a code span that holds a command (``npm start -- --storage /tmp/x``), whose paths are arguments, not evidence: on a 2,500-learning store that cleared 3 of 8 hits, all documented commands. A path the writer keeps on purpose, such as verbatim output or a documented location, goes in a fenced code block, which the refusal and the notice name as a fix.
 - Each signal names the check it predicts a failure of. Write-time notices are prefixed with it, and five signals gained one: `story`, `maxim` and `branch` (factual), `dates` and `handoffs` (atomic); `growth` notices in an update and now ignores link lists. `owner` and `work-session` stay priors without a reason.
 - The `memory_health` queue reads `[id8, score, reads, {factual: [...], atomic: [...]}]`, and `memory_recall` signal hits group what matched by check.
 

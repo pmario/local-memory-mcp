@@ -4,7 +4,7 @@
  * `atomic`: one subject per entry; `factual`: all the facts, the current state only, no story.
  */
 import { z } from 'zod';
-import { scratchPaths } from '../signals/scratch.js';
+import { SCRATCH_FIX, scratchPaths } from '../signals/scratch.js';
 
 export const STYLES = ['atomic', 'factual'] as const;
 export type Style = (typeof STYLES)[number];
@@ -62,7 +62,7 @@ export function factualRefusal(style: readonly unknown[], content: string) {
   if (paths.length === 0) return null;
   return {
     success: false as const,
-    error: `Refused: a factual text cites a scratch path (${paths.join(', ')}), whose evidence will not last: move it to a versioned directory and cite that, or state the result without the path.`,
+    error: `Refused: a factual text cites a scratch path (${paths.join(', ')}), whose evidence will not last: ${SCRATCH_FIX}.`,
     code: 'SCRATCH_PATH',
   };
 }

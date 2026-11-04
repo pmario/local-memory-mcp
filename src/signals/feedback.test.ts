@@ -78,6 +78,32 @@ describe('scratch paths: tmp and temp', () => {
     expect(found('Wrote %TEMP%\\out.json and $TMPDIR/out.json.')).toEqual(['%TEMP%\\out.json', '$TMPDIR/out.json']);
   });
 
+  // Cases from the store on 2026-11-04 (0e35459c, 0ca5d74b, 0105c70b, ca05236a).
+  it('ignores a path inside a code span that holds a command, and keeps a code span that is only the path', () => {
+    expect(found('Run `npm start -- --storage /tmp/pear-chat-user1 --name user1` in one terminal.')).toEqual([]);
+    expect(found('Lint via `node eslint.js --stdin --stdin-filename core/x.js < E:/tmp/.../wt/core/x.js`.')).toEqual([]);
+    expect(found('Running `cdp-errors.js 9335` (then in `E:/tmp/fluid-layout/`) dropped a draft.')).toEqual(['E:/tmp/fluid-layout/']);
+    expect(found('It failed with actual `C:\\Users\\Mario\\AppData\\Local\\Temp\\fs-1\\Note_1.tid`.')).toEqual([
+      'C:\\Users\\Mario\\AppData\\Local\\Temp\\fs-1\\Note_1.tid',
+    ]);
+  });
+
+  it('pairs code spans left to right, so the prose between two spans is no command', () => {
+    expect(found('Each peer gets its own `--storage` and the second starts with `npm start -- --storage /tmp/pear-chat-user2 --name user2`.')).toEqual([]);
+  });
+
+  it('ignores a path the writer kept on purpose in a fenced code block', () => {
+    expect(found('The spec failed with:\n\n```\nactual C:\\Users\\Mario\\AppData\\Local\\Temp\\fs-1\\Note_1.tid\n```\n\nafter the scan.')).toEqual([]);
+  });
+
+  it('tells the writer the fenced code block in the notice', () => {
+    expect(signal('scratch').notice!(ctx('Probe in E:/tmp/p.js.'))).toContain('fenced code block');
+  });
+
+  it('still finds a bare path next to a command span', () => {
+    expect(found('Run `npm start -- --storage /tmp/a`; the log is in /tmp/run.log.')).toEqual(['/tmp/run.log']);
+  });
+
   it('leaves template, temporary and tmp-named files alone', () => {
     expect(found('Read E:/git/templates/a.tid, E:/git/x/temporary/b.js and src/tmp.ts.')).toEqual([]);
   });

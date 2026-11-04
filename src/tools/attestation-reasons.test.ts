@@ -105,7 +105,13 @@ describe('a factual text that cites a scratch path is refused', () => {
     if (r.success) return;
     expect(r.error).toContain('E:/tmp/p.js');
     expect(r.error).toContain('versioned');
+    expect(r.error).toContain('fenced code block');
     expect(await count()).toBe(before);
+  });
+
+  it('stores a factual text whose path the writer kept in a fenced code block', async () => {
+    const r = await learnResult('The spec failed with this output, 1 run:\n\n```\nactual E:/tmp/fs-1/Note_1.tid\n```');
+    expect(r.success).toBe(true);
   });
 
   it('memory_learn_update refuses a rewrite that adds one, and leaves the row alone', async () => {
