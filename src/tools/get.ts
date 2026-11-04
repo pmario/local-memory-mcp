@@ -9,6 +9,7 @@ import { activeParts } from '../lib/split.js';
 import { VERSIONED_COLUMNS, currentSince } from '../lib/history.js';
 import { headline } from '../lib/brief.js';
 import { countReads } from '../lib/reads.js';
+import { withoutDefaults } from '../lib/defaults.js';
 import type { ToolResult } from '../lib/types.js';
 
 export const getSchema = z.object({
@@ -74,24 +75,6 @@ interface DecisionRow {
 
 // Handoffs quote the first 8 characters of a UUID; a shorter string could open an arbitrary entry.
 const ID_PREFIX = /^[0-9a-f]{8}[0-9a-f-]{0,27}$/;
-
-// Column defaults from schema.sql that an opened entry leaves out, besides null, false and [] (local-memory-mcp-2mi).
-const DEFAULTS: Record<string, unknown> = { confidence: 0.7, memory_type: 'semantic', lifecycle_state: 'active' };
-
-/**
- * Drops the fields of an opened entry that hold their default, so a plain entry carries only what it says.
- * @param entry - a learning, decision, session or history version as memory_get returns it
- * @returns the entry without null, false, empty-list and column-default fields
- */
-function withoutDefaults(entry: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(entry).filter(([key, value]) => {
-      if (value === null || value === undefined || value === false) return false;
-      if (Array.isArray(value) && value.length === 0) return false;
-      return !(key in DEFAULTS && DEFAULTS[key] === value);
-    })
-  );
-}
 
 function idsStartingWith(db: ReturnType<typeof getDb>, prefix: string): string[] {
   const rows = db

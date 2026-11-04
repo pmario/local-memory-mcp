@@ -81,7 +81,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_recall',
-    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags scoping and excludeProjects/excludeTags. Omit query for most-recent. detail: brief returns headlines instead of content. signal keeps learnings that any named re-check signal fires on (scratch, hedge, …; memory_health flags with the same ones), each with signals: {check: {id: what matched}}. sort: reads (full-text deliveries), uses (reads, edits, duplicate writes) or activation (ACT-R base-level activation from reads, age and last use: frequent and recent first); a sorted result shows reads and uses.',
+    description: 'Quick FTS5 keyword recall over learnings only (no vector/hybrid — use memory_search for that). Optional project/tags scoping and excludeProjects/excludeTags. Omit query for most-recent. detail: brief returns headlines instead of content. signal keeps learnings that any named re-check signal fires on (scratch, hedge, …; memory_health flags with the same ones), each with signals: {check: {id: what matched}}. sort: reads (full-text deliveries), uses (reads, edits, duplicate writes) or activation (ACT-R base-level activation from reads, age and last use: frequent and recent first); a sorted result shows reads and uses. A field at its default is left out, as in memory_get.',
     schema: recallSchema,
     handler: (input) => recall(input as z.infer<typeof recallSchema>),
   },

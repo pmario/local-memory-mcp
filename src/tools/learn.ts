@@ -27,6 +27,7 @@ import { checkHub, checkPart } from '../lib/split.js';
 import { contentVersions, withHistory } from '../lib/history.js';
 import { countReads } from '../lib/reads.js';
 import { activation } from '../lib/activation.js';
+import { withoutDefaults } from '../lib/defaults.js';
 import { firedSignals, SIGNAL_IDS, signalContext, writeNotices } from '../signals/index.js';
 import type { ToolResult, MemoryType, LearningCategory } from '../lib/types.js';
 
@@ -610,13 +611,15 @@ interface RecallRow {
  * @returns the tool result
  */
 function recallResult(rows: RecallRow[], input: RecallInput): ToolResult {
-  const results = rows.map(({ content, read_count, usage_count, last_used, rechecked_at, signals, activation: score, ...row }) => ({
-    ...row,
-    ...(input.detail === 'brief' ? { headline: headline(content) } : { content }),
-    ...(input.sort ? { reads: read_count, uses: usage_count } : {}),
-    ...(score != null ? { activation: Math.round(score * 100) / 100 } : {}),
-    ...(signals ? { signals, ...(rechecked_at ? { recheckedAt: rechecked_at } : {}) } : {}),
-  }));
+  const results = rows.map(({ content, read_count, usage_count, last_used, rechecked_at, signals, activation: score, ...row }) =>
+    withoutDefaults({
+      ...row,
+      ...(input.detail === 'brief' ? { headline: headline(content) } : { content }),
+      ...(input.sort ? { reads: read_count, uses: usage_count } : {}),
+      ...(score != null ? { activation: Math.round(score * 100) / 100 } : {}),
+      ...(signals ? { signals, ...(rechecked_at ? { recheckedAt: rechecked_at } : {}) } : {}),
+    })
+  );
   if (input.detail !== 'brief') countReads(getDb(), rows.map((r) => r.id));
   return { success: true, data: { results, count: results.length } };
 }

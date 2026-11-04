@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-Lean session start and embeddings that cover whole entries. 27 tools, 269 → **535 tests**.
+Lean session start and embeddings that cover whole entries. 27 tools, 269 → **538 tests**.
 
 ### Changed — style is an attestation; re-check reasons per check
 
@@ -18,7 +18,7 @@ Listing every learning that cites a scratch path took a separate script, and no 
 
 ### Changed — compact tool output
 
-Every tool answered with `JSON.stringify(result, null, 2)`, one line per array item. Results now indent with tabs and keep any array or object on one line when it fits in 120 columns, so a `memory_health` re-check entry reads `["0105c70b", 1, 7, "scratch"]`: 1,660 → 933 characters on a 2,500-learning store. `memory_get` leaves out fields at their default (null, `false`, an empty list, `confidence` 0.7, `memory_type` semantic, `lifecycle_state` active, a `verifiedAt` equal to `date`, an empty `missing` or `ambiguous`).
+Every tool answered with `JSON.stringify(result, null, 2)`, one line per array item. Results now indent with tabs and keep any array or object on one line when it fits in 120 columns, so a `memory_health` re-check entry reads `["0105c70b", 1, 7, "scratch"]`: 1,660 → 933 characters on a 2,500-learning store. `memory_get` leaves out fields at their default (null, `false`, an empty list, `confidence` 0.7, `memory_type` semantic, `lifecycle_state` active, a `verifiedAt` equal to `date`, an empty `missing` or `ambiguous`), and so do `memory_recall` hits (`project`, `confidence`, `memory_type`); `memory_search` shows `requestedMode` only when the search was downgraded.
 
 ### Changed — one first-line rule: the finding as measured, with its count
 

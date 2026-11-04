@@ -540,7 +540,8 @@ export async function search(input: z.infer<typeof searchSchema>): Promise<ToolR
         results,
         count: results.length,
         mode: effectiveMode,
-        requestedMode,
+        // Shown only when the search was downgraded, like the notice.
+        ...(requestedMode !== effectiveMode ? { requestedMode } : {}),
         ...(project ? { project } : {}),
         ...(tags && tags.length > 0 ? { tags } : {}),
         ...(scope.excludeProjects ? { excludeProjects: scope.excludeProjects } : {}),
